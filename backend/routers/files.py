@@ -1,54 +1,50 @@
 # backend/routers/files.py
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, status
+from fastapi import APIRouter, UploadFile, File, HTTPException, status, Depends
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from pathlib import Path
+from typing import Optional
+
 from backend.core.database import get_db
-from backend.core.storage import save_upload_file_from_uploadfile, ALLOWED_MIMES, MAX_FILE_SIZE
+from backend.core.storage import save_upload_file_from_uploadfile, ALLOWED_MIMES, MAX_FILE_SIZE, get_file_path
 from backend.models.comparison_models import Document
-from backend.schemas.comparison import UploadResponse
-# optional: если хотите сохранять user_id при наличии токена
-try:
-    from backend.routers.auth import get_current_user
-except Exception:
-    get_current_user = None
+from backend.schemas.comparison import UploadedFileOut
 
 router = APIRouter(prefix="/api/v1/files", tags=["files"])
 
-@router.post("/upload", response_model=UploadResponse, status_code=status.HTTP_201_CREATED)
-async def upload_files(
-    files: List[UploadFile] = File(...),            # <- ожидаем multipart поле "files"
-    db: Session = Depends(get_db),
-    # если хотите опционально извлечь user, замените на: user: Optional[User] = Depends(get_current_user) и импорт User
-):
-    """
-    Принимает multipart/form-data с полем files (можно несколько).
-    Поддерживаемые форматы: .doc, .docx, .md, .pdf, .txt.
-    Доступно без обязательной авторизации (если хотите — добавьте get_current_user).
-    """
-    saved = []
-    for up in files:
-        content_type = (up.content_type or "").lower()
-        # проверка mime/расширения
-        if content_type not in ALLOWED_MIMES:
-            ext = (up.filename or "").lower().split(".")[-1] if up.filename else ""
-            if ext not in ("doc", "docx", "md", "pdf", "txt"):
-                raise HTTPException(status_code=415, detail=f"Unsupported file type: {content_type} / .{ext}")
+def _validate_and_get_size(upload: UploadFile) -> int:
+    try:
+        upload.file.seek(0, 2)
+        size = upload.file.tell()
+        upload.file.seek(0)
+    except Exception:
+        size = 0
+    return size
 
-        # проверка размера (SpooledTemporaryFile)
-        try:
-            up.file.seek(0, 2)
-            size = up.file.tell()
-            up.file.seek(0)
-        except Exception:
-            size = 0
+def _validate_meta(filename: str, content_type: Optional[str]) -> None:
+    ext = Path(filename).suffix.lower().lstrip(".")
+    allowed_exts = {"doc", "docx", "md", "pdf", "txt"}
+    if (content_type or "").lower() not in ALLOWED_MIMES and ext not in allowed_exts:
+        raise HTTPException(status_code=415, detail=f"Unsupported file type: {content_type} / .{ext}")
 
-        if size and size > MAX_FILE_SIZE:
-            raise HTTPException(status_code=413, detail="File too large")
+async def _save_file_and_create_doc(upload: UploadFile, db: Session) -> Document:
+    filename = upload.filename or "file"
+    content_type = (upload.content_type or "").lower()
 
-        rel_path, saved_size = save_upload_file_from_uploadfile(up, up.filename or "file")
+    _validate_meta(filename, content_type)
+
+    size = _validate_and_get_size(upload)
+    if size and size > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File too large")
+
+    try:
+        rel_path, saved_size = save_upload_file_from_uploadfile(upload, filename)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Failed to save file")
+
+    try:
         doc = Document(
             user_id=None,
-            filename=up.filename or "file",
+            filename=filename,
             mime=content_type or "application/octet-stream",
             size=saved_size,
             storage_path=rel_path
@@ -56,5 +52,35 @@ async def upload_files(
         db.add(doc)
         db.commit()
         db.refresh(doc)
-        saved.append(doc)
-    return UploadResponse(files=saved)
+    except Exception:
+        db.rollback()
+        # попытка удалить файл при ошибке БД
+        try:
+            p = Path(get_file_path(rel_path))
+            if p.exists():
+                p.unlink()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail="Database error while saving file metadata")
+
+    return doc
+
+@router.post("/upload/first", response_model=UploadedFileOut, status_code=status.HTTP_201_CREATED)
+async def upload_first(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """
+    Эндпоинт для загрузки первого файла.
+    Путь: POST /api/v1/files/upload/first
+    Поле формы: file
+    """
+    doc = await _save_file_and_create_doc(file, db)
+    return doc
+
+@router.post("/upload/second", response_model=UploadedFileOut, status_code=status.HTTP_201_CREATED)
+async def upload_second(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """
+    Эндпоинт для загрузки второго файла.
+    Путь: POST /api/v1/files/upload/second
+    Поле формы: file
+    """
+    doc = await _save_file_and_create_doc(file, db)
+    return doc

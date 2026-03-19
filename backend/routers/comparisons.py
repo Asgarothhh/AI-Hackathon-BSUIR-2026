@@ -1,20 +1,31 @@
 # backend/routers/comparisons.py
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from typing import List, Optional
+
 from backend.core.database import get_db
 from backend.models.comparison_models import Comparison, ComparisonFile, Document, ChangeItem, Report
-from backend.schemas.comparison import ComparisonCreateIn, ComparisonOut, PaginatedChangeItems
-from typing import Optional
-from datetime import datetime
+from backend.schemas.comparison import (
+    ComparisonCreateIn,
+    ComparisonOut,
+    PaginatedChangeItems,
+    ChangeItemOut,
+    ComparisonListItem,
+)
 
 router = APIRouter(prefix="/api/v1/comparisons", tags=["comparisons"])
 
-@router.post("", response_model=ComparisonOut, status_code=status.HTTP_202_ACCEPTED)
-def create_comparison(payload: ComparisonCreateIn, db: Session = Depends(get_db), authorization: Optional[str] = None):
+@router.get("", response_model=List[ComparisonListItem])
+def list_comparisons(limit: int = Query(50, ge=1, le=500), db: Session = Depends(get_db)):
     """
-    Создать задачу сравнения. Доступно без авторизации.
-    Если хотите записывать created_by — добавьте проверку токена и извлечение user_id.
+    Список всех comparisons, новые сверху.
     """
+    q = db.query(Comparison).order_by(Comparison.created_at.desc()).limit(limit)
+    items = q.all()
+    return items
+
+@router.post("", response_model=ComparisonOut, status_code=202)
+def create_comparison(payload: ComparisonCreateIn, db: Session = Depends(get_db)):
     docs = db.query(Document).filter(Document.id.in_(payload.file_ids)).all()
     if len(docs) != len(payload.file_ids):
         raise HTTPException(status_code=400, detail="One or more files not found")
@@ -46,10 +57,30 @@ def get_comparison(comparison_id: int, db: Session = Depends(get_db)):
     summary = f"Найдено {total} изменений: {red} критических, {yellow} требующих проверки, {green} безопасных"
     return ComparisonOut(id=comp.id, title=comp.title, status=comp.status, summary=summary, risk_counts={"green": green, "yellow": yellow, "red": red}, report_id=comp.report_id)
 
-@router.get("/{comparison_id}/track", response_model=PaginatedChangeItems)
-def get_track(comparison_id: int, page: int = Query(1, ge=1), per_page: int = Query(20, ge=1, le=200), db: Session = Depends(get_db)):
-    q = db.query(ChangeItem).filter(ChangeItem.comparison_id == comparison_id).order_by(ChangeItem.id.asc())
-    total = q.count()
+@router.get("/track", response_model=PaginatedChangeItems)
+def get_track_all(
+    comparison_id: Optional[int] = Query(None),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=1000),
+    q: Optional[str] = Query(None, description="Поиск по before/after/linked_law"),
+    db: Session = Depends(get_db),
+):
+    """
+    Если comparison_id указан — возвращает change_items для этого сравнения.
+    Если comparison_id не указан — возвращает все change_items по всем сравнениям, новые сверху.
+    Поддерживает поиск по тексту (q).
+    """
+    base = db.query(ChangeItem)
+    if comparison_id:
+        base = base.filter(ChangeItem.comparison_id == comparison_id)
+    if q:
+        like = f"%{q}%"
+        base = base.filter(
+            (ChangeItem.before.ilike(like)) |
+            (ChangeItem.after.ilike(like)) |
+            (ChangeItem.linked_law.cast(db.bind.dialect.type_descriptor(ChangeItem.linked_law.type)).ilike(like))
+        )
+    total = base.count()
     total_pages = max(1, (total + per_page - 1) // per_page)
-    items = q.offset((page - 1) * per_page).limit(per_page).all()
+    items = base.order_by(ChangeItem.created_at.desc()).offset((page - 1) * per_page).limit(per_page).all()
     return PaginatedChangeItems(items=items, page=page, total_pages=total_pages)

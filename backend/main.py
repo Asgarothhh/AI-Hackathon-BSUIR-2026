@@ -9,6 +9,7 @@ from backend.routers import auth  # ваш модуль аутентификац
 from backend.routers.files import router as files_router
 from backend.routers.comparisons import router as comparisons_router
 from backend.routers.reports import router as reports_router
+from backend.routers import search
 
 app = FastAPI(title="Comparisons API")
 
@@ -26,6 +27,7 @@ app.include_router(auth.router)
 app.include_router(files_router)
 app.include_router(comparisons_router)
 app.include_router(reports_router)
+app.include_router(search.router)
 
 # create tables in dev if needed
 engine = get_engine()

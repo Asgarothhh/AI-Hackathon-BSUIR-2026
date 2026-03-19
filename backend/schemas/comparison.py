@@ -1,4 +1,6 @@
 # backend/schemas/comparison.py
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 from typing import List, Optional, Any
 
@@ -44,3 +46,26 @@ class PaginatedChangeItems(BaseModel):
     items: List[ChangeItemOut]
     page: int
     total_pages: int
+
+
+# backend/schemas/comparison.py  (дополнения)
+from pydantic import BaseModel
+from typing import List, Optional, Dict, Any
+
+class DocumentOut(BaseModel):
+    id: int
+    filename: str
+    mime: Optional[str]
+    size: Optional[int]
+    storage_path: Optional[str]
+
+    model_config = {"from_attributes": True}
+
+class ComparisonListItem(BaseModel):
+    id: int
+    title: Optional[str]
+    status: str
+    created_at: Optional[datetime]
+    report_id: Optional[int]
+
+    model_config = {"from_attributes": True}
