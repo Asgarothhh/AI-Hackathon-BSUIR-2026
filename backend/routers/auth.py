@@ -1,31 +1,124 @@
 # backend/routers/auth.py
 import logging
+from datetime import timezone
+from typing import Optional, Callable, Dict, Any
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
-from datetime import timezone
 
 from backend.core.database import get_db
 from backend.models.user import User
-from backend.models.rbac import Role, RefreshToken, user_roles
+from backend.models.rbac import Role as RoleModel, Permission, RefreshToken, user_roles, role_permissions
 from backend.schemas.auth import UserCreate, UserOut, Token, RoleAssignIn
-from backend.core.security import create_access_token, create_refresh_token, decode_token, is_refresh_token, ACCESS_TOKEN_EXPIRE_MINUTES
-
+from backend.core.security import (
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+    is_refresh_token,
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+)
 from passlib.context import CryptContext
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+import jwt  # PyJWT
+
 logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/auth", tags=["auth"])
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 bearer = HTTPBearer()
 
+
+# --- password helpers ---
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
+
 
 def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
 
+
+# --- auth helpers / dependencies ---
+def _raise_401(detail: str = "Could not validate credentials"):
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=detail,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer),
+    db: Session = Depends(get_db),
+) -> User:
+    """
+    Dependency: validate access token and return User instance.
+    Accepts only access tokens (type == "access").
+    """
+    token = credentials.credentials
+    try:
+        payload = decode_token(token)
+    except jwt.ExpiredSignatureError:
+        _raise_401("Token expired")
+    except Exception:
+        _raise_401("Invalid token")
+
+    if payload.get("type") != "access":
+        _raise_401("Invalid token type")
+
+    sub = payload.get("sub")
+    if sub is None:
+        _raise_401("Token missing subject")
+    try:
+        user_id = int(sub)
+    except ValueError:
+        _raise_401("Invalid subject in token")
+
+    user = db.query(User).get(user_id)
+    if not user:
+        _raise_401("User not found")
+    if not getattr(user, "is_active", True):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User inactive")
+    return user
+
+
+# --- permission check helper ---
+def user_has_permission(db: Session, user: User, permission_name: str) -> bool:
+    """
+    Check whether the user has a given permission via roles.
+    """
+    # fetch role ids for user from association table
+    role_rows = db.execute(user_roles.select().where(user_roles.c.user_id == user.id)).fetchall()
+    role_ids = [r.role_id for r in role_rows]
+    if not role_ids:
+        return False
+    perm = db.query(Permission).filter(Permission.name == permission_name).first()
+    if not perm:
+        return False
+    rp = db.execute(
+        role_permissions.select().where(
+            (role_permissions.c.role_id.in_(role_ids)) & (role_permissions.c.permission_id == perm.id)
+        )
+    ).first()
+    return rp is not None
+
+
+def require_permission(permission_name: str) -> Callable:
+    """
+    Returns a dependency function that raises 403 if current user lacks permission.
+    Usage in route: _admin: bool = Depends(require_permission("manage:roles"))
+    """
+
+    def _dep(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+        if not user_has_permission(db, user, permission_name):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+        return True
+
+    return _dep
+
+
+# --- endpoints ---
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 def register(payload: UserCreate, db: Session = Depends(get_db)):
     email_norm = payload.email.strip().lower()
@@ -37,8 +130,8 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
         db.add(new_user)
         db.commit()
         db.refresh(new_user)
-        # назначаем роль user по умолчанию, если есть
-        role_user = db.query(Role).filter_by(name="user").first()
+        # assign default role 'user' if exists
+        role_user = db.query(RoleModel).filter_by(name="user").first()
         if role_user:
             db.execute(user_roles.insert().values(user_id=new_user.id, role_id=role_user.id))
             db.commit()
@@ -50,6 +143,7 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
         db.rollback()
         logger.exception("Unexpected error during register")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
 
 @router.post("/login", response_model=Token)
 def login(payload: UserCreate, db: Session = Depends(get_db)):
@@ -64,7 +158,8 @@ def login(payload: UserCreate, db: Session = Depends(get_db)):
     rt = RefreshToken(user_id=user.id, token=refresh, expires_at=expires_at)
     db.add(rt)
     db.commit()
-    return Token(access_token=access, refresh_token=refresh, expires_in=int(ACCESS_TOKEN_EXPIRE_MINUTES*60))
+    return Token(access_token=access, refresh_token=refresh, expires_in=int(ACCESS_TOKEN_EXPIRE_MINUTES * 60))
+
 
 @router.post("/token/refresh", response_model=Token)
 def refresh_token(credentials: HTTPAuthorizationCredentials = Depends(bearer), db: Session = Depends(get_db)):
@@ -85,29 +180,50 @@ def refresh_token(credentials: HTTPAuthorizationCredentials = Depends(bearer), d
         rt.expires_at = new_expires_at
         db.add(rt)
         db.commit()
-        return Token(access_token=access, refresh_token=new_refresh, expires_in=int(ACCESS_TOKEN_EXPIRE_MINUTES*60))
+        return Token(access_token=access, refresh_token=new_refresh, expires_in=int(ACCESS_TOKEN_EXPIRE_MINUTES * 60))
     except HTTPException:
         raise
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
     except Exception:
         logger.exception("Invalid refresh token")
         raise HTTPException(status_code=401, detail="Invalid token")
+
 
 @router.post("/logout")
 def logout(credentials: HTTPAuthorizationCredentials = Depends(bearer), db: Session = Depends(get_db)):
     token = credentials.credentials
     try:
         payload = decode_token(token)
-        user_id = int(payload.get("sub"))
-        db.query(RefreshToken).filter(RefreshToken.user_id == user_id).update({"revoked": True})
-        db.commit()
-        return {"ok": True}
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
     except Exception:
-        logger.exception("Logout failed")
-        raise HTTPException(status_code=400, detail="Logout failed")
+        logger.exception("Logout failed: invalid token")
+        raise HTTPException(status_code=400, detail="Invalid token")
+
+    sub = payload.get("sub")
+    if sub is None:
+        raise HTTPException(status_code=400, detail="Token missing subject")
+    try:
+        user_id = int(sub)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid subject in token")
+
+    if payload.get("type") == "refresh":
+        db.query(RefreshToken).filter(RefreshToken.token == token, RefreshToken.user_id == user_id).update({"revoked": True})
+    else:
+        db.query(RefreshToken).filter(RefreshToken.user_id == user_id).update({"revoked": True})
+    db.commit()
+    return {"ok": True}
+
 
 @router.post("/role/assign")
-def assign_role(payload: RoleAssignIn, db: Session = Depends(get_db)):
-    role = db.query(Role).filter_by(name=payload.role_name).first()
+def assign_role(
+    payload: RoleAssignIn,
+    db: Session = Depends(get_db),
+    _admin: bool = Depends(require_permission("manage:roles")),
+):
+    role = db.query(RoleModel).filter_by(name=payload.role_name).first()
     if not role:
         raise HTTPException(status_code=404, detail="Role not found")
     try:
