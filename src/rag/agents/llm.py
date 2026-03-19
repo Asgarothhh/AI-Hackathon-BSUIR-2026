@@ -7,7 +7,7 @@ from src.rag.agents import states
 
 load_dotenv()
 
-embeddings = OpenAIEmbeddings(model="openai/text-embedding-3-small",
+embedding = OpenAIEmbeddings(model="openai/text-embedding-3-small",
                               openai_api_key=os.environ.get("OPENROUTER_API_KEY"),
                               base_url="https://openrouter.ai/api/v1")
 model = ChatOpenAI(
@@ -15,7 +15,7 @@ model = ChatOpenAI(
     api_key=os.environ.get("OPENROUTER_API_KEY"),
     base_url="https://openrouter.ai/api/v1",
     temperature=0,
-    max_tokens=6000,
+    max_tokens=2500,
 )
 
 # planner = model.with_structured_output(states.Sections)
