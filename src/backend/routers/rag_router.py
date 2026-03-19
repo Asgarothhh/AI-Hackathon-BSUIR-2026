@@ -1,13 +1,15 @@
 import os
 import re
+from io import BytesIO
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from src.backend.schemas.rag_schemas import (
     RagAskRequest,
     RagAskResponse,
+    RagCompareResponse,
     RagHealthResponse,
     RagHit,
     RagIndexBuildRequest,
@@ -23,6 +25,27 @@ from src.backend.services.mini_rag import (
 from src.rag.agents.llm_call import get_llm
 
 router = APIRouter(prefix="/rag", tags=["rag"])
+
+
+def _read_uploaded_text(upload: UploadFile) -> str:
+    filename = (upload.filename or "").strip()
+    suffix = os.path.splitext(filename)[1].lower()
+    raw = upload.file.read()
+    if not raw:
+        return ""
+    if suffix in {".txt", ".md", ".markdown"}:
+        return raw.decode("utf-8", errors="ignore").strip()
+    if suffix == ".pdf":
+        try:
+            from pypdf import PdfReader
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="PDF parsing requires pypdf") from exc
+        reader = PdfReader(BytesIO(raw), strict=False)
+        pages = []
+        for page in list(reader.pages)[:80]:
+            pages.append((page.extract_text() or "").strip())
+        return "\n\n".join([p for p in pages if p]).strip()
+    raise HTTPException(status_code=400, detail=f"Unsupported file format: {suffix or 'unknown'}")
 
 
 def _split_with_overlap(text: str, chunk_size: int, overlap: int) -> list[str]:
@@ -185,4 +208,45 @@ def rag_build_index(payload: RagIndexBuildRequest) -> dict:
         "chunk_overlap": payload.chunk_overlap,
         "reset_index": payload.reset_index,
     }
+
+
+@router.post("/compare/upload", response_model=RagCompareResponse)
+async def rag_compare_upload(
+    old_file: UploadFile = File(...),
+    new_file: UploadFile = File(...),
+) -> RagCompareResponse:
+    old_text = _read_uploaded_text(old_file)
+    new_text = _read_uploaded_text(new_file)
+    if not old_text:
+        raise HTTPException(status_code=400, detail="old_file is empty after parsing")
+    if not new_text:
+        raise HTTPException(status_code=400, detail="new_file is empty after parsing")
+
+    try:
+        from src.rag.agents.graph import analyzer_model
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Analyzer model unavailable: {exc}") from exc
+
+    try:
+        result = await analyzer_model.ainvoke(
+            {
+                "old_doc_text": old_text,
+                "new_doc_text": new_text,
+                "completed_analysis": [],
+            }
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"RAG compare failed: {exc}") from exc
+
+    report = ""
+    if isinstance(result, dict):
+        report = str((result.get("final_report_metadata") or {}).get("text") or "").strip()
+    if not report:
+        report = "Отчет не сформирован."
+
+    return RagCompareResponse(
+        old_file=old_file.filename or "old_file",
+        new_file=new_file.filename or "new_file",
+        report_markdown=report,
+    )
 

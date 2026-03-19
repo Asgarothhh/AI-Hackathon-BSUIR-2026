@@ -52,3 +52,9 @@ class RagHealthResponse(BaseModel):
     vector_store: dict
     kb: dict
 
+
+class RagCompareResponse(BaseModel):
+    old_file: str
+    new_file: str
+    report_markdown: str
+

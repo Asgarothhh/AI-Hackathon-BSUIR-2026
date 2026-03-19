@@ -199,8 +199,7 @@ def _build_sources_meta(sources: list[str]) -> list[dict]:
 @router.post("/build", response_model=BuildKnowledgeBaseResponse)
 def build_page(payload: BuildKnowledgeBaseRequest) -> BuildKnowledgeBaseResponse:
     logger.info(
-        "KB /build started: title='%s', chapter='%s', chars=%s",
-        payload.title,
+        "KB /build started: chapter='%s', chars=%s",
         payload.chapter,
         len(payload.document_text or ""),
     )
@@ -210,7 +209,8 @@ def build_page(payload: BuildKnowledgeBaseRequest) -> BuildKnowledgeBaseResponse
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     try:
-        extracted = builder.process(payload.title, payload.chapter, payload.document_text)
+        generated_title = builder.suggest_title(payload.document_text, fallback="База знаний")
+        extracted = builder.process(generated_title, payload.chapter, payload.document_text)
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -219,20 +219,18 @@ def build_page(payload: BuildKnowledgeBaseRequest) -> BuildKnowledgeBaseResponse
     markdown = builder.to_markdown(extracted, payload.sources, payload.images)
     page = KnowledgePage(
         slug=extracted["slug"],
-        title=payload.title,
+        title=generated_title,
         chapter=payload.chapter,
         markdown=markdown,
         sources=payload.sources,
         images=payload.images,
     )
-    store.upsert(page, save=False)
-    terms = [item.get("term", "").strip() for item in extracted.get("definitions", [])]
-    if not store.auto_crosslink_terms(terms, page.slug):
-        store.flush()
+    # Single KB mode: replace previous knowledge base.
+    store.replace_with(page)
     logger.info(
         "KB /build finished: slug='%s', definitions=%s",
         page.slug,
-        len(terms),
+        len(extracted.get("definitions", []) or []),
     )
 
     return BuildKnowledgeBaseResponse(
@@ -256,43 +254,51 @@ def build_pages_batch(payload: BatchBuildKnowledgeBaseRequest) -> BatchBuildKnow
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    built: list[BuildKnowledgeBaseResponse] = []
-    total = len(payload.pages)
-    for idx, item in enumerate(payload.pages, start=1):
-        logger.info("KB /build/batch page started %s/%s: title='%s'", idx, total, item.title)
-        try:
-            extracted = builder.process(item.title, item.chapter, item.document_text)
-        except Exception as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=f"KB batch build failed on '{item.title}': {exc}",
-            ) from exc
-        markdown = builder.to_markdown(extracted, item.sources, item.images)
-        page = KnowledgePage(
-            slug=extracted["slug"],
-            title=item.title,
-            chapter=item.chapter,
-            markdown=markdown,
-            sources=item.sources,
-            images=item.images,
-        )
-        store.upsert(page, save=False)
-        terms = [definition.get("term", "").strip() for definition in extracted.get("definitions", [])]
-        if not store.auto_crosslink_terms(terms, page.slug):
-            store.flush()
-        logger.info("KB /build/batch page done %s/%s: slug='%s'", idx, total, page.slug)
+    if not payload.pages:
+        raise HTTPException(status_code=400, detail="Empty pages list")
 
-        built.append(
+    # Single KB mode: merge batch inputs into one knowledge base.
+    chapter = payload.pages[0].chapter or "General"
+    documents = []
+    all_sources: list[str] = []
+    all_images: list[str] = []
+    for idx, item in enumerate(payload.pages, start=1):
+        documents.append(
+            {
+                "name": item.title or f"Документ {idx}",
+                "content": item.document_text,
+            }
+        )
+        all_sources.extend(item.sources or [])
+        all_images.extend(item.images or [])
+
+    merged_text = "\n\n".join(doc["content"] for doc in documents if (doc["content"] or "").strip())
+    generated_title = builder.suggest_title(merged_text, fallback="Сводная база знаний")
+    markdown = builder.build_single_kb_detailed_markdown(
+        title=generated_title,
+        chapter=chapter,
+        documents=documents,
+    )
+    page = KnowledgePage(
+        slug=builder.slugify(generated_title),
+        title=generated_title,
+        chapter=chapter,
+        markdown=markdown,
+        sources=all_sources,
+        images=all_images,
+    )
+    store.replace_with(page)
+    logger.info("KB /build/batch finished in single-kb mode: slug='%s'", page.slug)
+    return BatchBuildKnowledgeBaseResponse(
+        pages=[
             BuildKnowledgeBaseResponse(
                 slug=page.slug,
                 title=page.title,
                 chapter=page.chapter,
                 markdown=page.markdown,
             )
-        )
-
-    logger.info("KB /build/batch finished: built=%s", len(built))
-    return BatchBuildKnowledgeBaseResponse(pages=built)
+        ]
+    )
 
 
 @router.get("/uploads/files")
@@ -375,85 +381,31 @@ def build_pages_from_uploads_stream(payload: BuildFromUploadsRequest) -> Streami
             return
 
         if payload.combine_into_single_page:
-            merged_title = (payload.combined_title or "").strip()
-            if not merged_title:
-                merged_preview = "\n\n".join(doc["content"][:3000] for doc in documents[:3])
-                merged_title = builder.suggest_title(
-                    merged_preview,
-                    fallback=f"Сводная база знаний ({len(documents)} файлов)",
-                )
-            chunk_size_chars = int(os.getenv("KB_CHUNK_SIZE_CHARS", "18000"))
-            chunks = builder._chunk_documents(documents, chunk_size_chars=chunk_size_chars)
-            yield emit_progress(
-                "chunking_ready",
-                title=merged_title,
-                documents=len(documents),
-                total_chunks=len(chunks),
+            merged_preview = "\n\n".join(doc["content"][:3000] for doc in documents[:3])
+            merged_title = builder.suggest_title(
+                merged_preview,
+                fallback=f"Сводная база знаний ({len(documents)} файлов)",
             )
-            logger.info(
-                "KB stream chunking: title='%s', documents=%s, chunks=%s",
-                merged_title,
-                len(documents),
-                len(chunks),
-            )
+            merged_sources = [doc["path"] for doc in documents]
+            yield emit_progress("build_started", title=merged_title, documents=len(documents))
 
             try:
-                chunk_partials: list[dict] = []
-                workers = max(1, int(os.getenv("KB_CHUNK_WORKERS", "3")))
-                futures = {}
-                with ThreadPoolExecutor(max_workers=workers) as executor:
-                    for chunk_idx, chunk in enumerate(chunks, start=1):
-                        chunk_title = f"{merged_title} (часть {chunk_idx})"
-                        futures[
-                            executor.submit(builder.process, chunk_title, payload.chapter, chunk["content"])
-                        ] = (chunk_idx, chunk.get("name", ""))
-                        yield emit_progress(
-                            "chunk_started",
-                            index=chunk_idx,
-                            total=len(chunks),
-                            chunk_name=chunk.get("name", ""),
-                        )
-
-                    partials_by_idx: dict[int, dict] = {}
-                    for future in as_completed(futures):
-                        chunk_idx, chunk_name = futures[future]
-                        extracted_part = future.result()
-                        partials_by_idx[chunk_idx] = extracted_part
-                        logger.info(
-                            "KB stream processing chunk done %s/%s: %s",
-                            chunk_idx,
-                            len(chunks),
-                            chunk_name,
-                        )
-                        yield emit_progress(
-                            "chunk_done",
-                            index=chunk_idx,
-                            total=len(chunks),
-                            chunk_name=chunk_name,
-                        )
-                chunk_partials = [partials_by_idx[i] for i in sorted(partials_by_idx.keys())]
-                extracted = builder._merge_extractions(chunk_partials, merged_title, payload.chapter)
-                yield emit_progress("chunks_merged", total_chunks=len(chunks))
-                merged_sources = [doc["path"] for doc in documents]
-                markdown = builder.to_markdown(extracted, merged_sources, [])
-                markdown = builder.enrich_created_markdown(
+                markdown = builder.build_single_kb_detailed_markdown(
                     title=merged_title,
                     chapter=payload.chapter,
-                    markdown=markdown,
-                    chunk_results=chunk_partials,
+                    documents=documents,
+                    progress_callback=lambda event: None,
                 )
                 page = KnowledgePage(
-                    slug=extracted["slug"],
+                    slug=builder.slugify(merged_title),
                     title=merged_title,
                     chapter=payload.chapter,
                     markdown=markdown,
                     sources=merged_sources,
                     images=[],
                 )
-                store.upsert(page, save=False)
-                terms = [definition.get("term", "").strip() for definition in extracted.get("definitions", [])]
-                if not store.auto_crosslink_terms(terms, page.slug):
-                    store.flush()
+                # Single KB mode: clear and replace.
+                store.replace_with(page)
                 built.append(
                     BuildKnowledgeBaseResponse(
                         slug=page.slug,
@@ -463,7 +415,7 @@ def build_pages_from_uploads_stream(payload: BuildFromUploadsRequest) -> Streami
                     )
                 )
                 yield emit_progress("page_saved", slug=page.slug, title=page.title)
-                logger.info("KB stream page saved: slug='%s'", page.slug)
+                logger.info("KB stream page saved (fast mode): slug='%s'", page.slug)
             except Exception as exc:
                 yield json.dumps(
                     {"type": "error", "detail": f"KB combined build failed: {exc}"},
@@ -472,38 +424,15 @@ def build_pages_from_uploads_stream(payload: BuildFromUploadsRequest) -> Streami
                 yield json.dumps({"type": "done"}) + "\n"
                 return
         else:
-            for idx, doc in enumerate(documents, start=1):
-                try:
-                    yield emit_progress("doc_build_started", index=idx, total=len(documents), file=doc["name"])
-                    title = builder.suggest_title(doc["content"], fallback=Path(doc["name"]).stem)
-                    extracted = builder.process(title, payload.chapter, doc["content"])
-                    markdown = builder.to_markdown(extracted, [doc["path"]], [])
-                    page = KnowledgePage(
-                        slug=extracted["slug"],
-                        title=title,
-                        chapter=payload.chapter,
-                        markdown=markdown,
-                        sources=[doc["path"]],
-                        images=[],
-                    )
-                    store.upsert(page, save=False)
-                    terms = [definition.get("term", "").strip() for definition in extracted.get("definitions", [])]
-                    if not store.auto_crosslink_terms(terms, page.slug):
-                        store.flush()
-                    built.append(
-                        BuildKnowledgeBaseResponse(
-                            slug=page.slug,
-                            title=page.title,
-                            chapter=page.chapter,
-                            markdown=page.markdown,
-                        )
-                    )
-                    yield emit_progress("doc_build_done", index=idx, total=len(documents), slug=page.slug)
-                    logger.info("KB stream per-doc build done %s/%s: slug='%s'", idx, len(documents), page.slug)
-                except Exception as exc:
-                    errors.append(f"{doc['name']}: {exc}")
-                    yield emit_progress("doc_build_error", index=idx, total=len(documents), file=doc["name"], detail=str(exc))
-                    logger.warning("KB stream per-doc build error %s/%s: %s (%s)", idx, len(documents), doc["name"], exc)
+            yield json.dumps(
+                {
+                    "type": "error",
+                    "detail": "Single-KB mode: используйте combine_into_single_page=true.",
+                },
+                ensure_ascii=False,
+            ) + "\n"
+            yield json.dumps({"type": "done"}) + "\n"
+            return
 
         if not built:
             yield json.dumps(
@@ -621,7 +550,17 @@ def ask_rag_stream(payload: AskRequest, x_user_role: str = Header(default="viewe
             yield json.dumps({"type": "done"}) + "\n"
             return
 
-        sources = get_selected_sources(question, top_candidates=12, top_k=3)
+        source_slug = (payload.source_slug or "").strip() or None
+        if not source_slug:
+            pages = store.all_pages()
+            source_slug = pages[0].slug if pages else None
+
+        sources = get_selected_sources(
+            question,
+            top_candidates=16,
+            top_k=6,
+            source_slug=source_slug,
+        )
         if not sources:
             answer = (
                 "Не нашел ответа в базе знаний. "
@@ -664,7 +603,7 @@ def ask_rag_stream(payload: AskRequest, x_user_role: str = Header(default="viewe
                 edited_slug = page.slug
 
         # Final safety filter: only truly highlightable sources go to UI.
-        safe_sources = validate_sources_for_display(sources, top_k=3)
+        safe_sources = validate_sources_for_display(sources, top_k=max(1, min(len(sources), 6)))
         out_sources = [
             {
                 "title": s["title"],
@@ -672,6 +611,7 @@ def ask_rag_stream(payload: AskRequest, x_user_role: str = Header(default="viewe
                 "link": s["link"],
                 "preview": s["preview"],
                 "highlightText": s["highlightText"],
+                "evidenceText": s.get("evidenceText", s["highlightText"]),
             }
             for s in safe_sources
         ]

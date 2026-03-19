@@ -477,9 +477,25 @@ button {
 }
 
 .source-card-title {
-  color: var(--obs-text);
+  color: #c8d6ff;
   font-weight: 600;
   margin-bottom: var(--space-1);
+  display: inline-block;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  transition: color 0.15s ease, text-shadow 0.15s ease;
+}
+
+.source-card-title::after {
+  content: " ↗";
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.source-card-title:hover {
+  color: #ffffff;
+  text-shadow: 0 0 12px rgba(163, 180, 255, 0.55);
 }
 
 .source-card-actions {

@@ -29,6 +29,14 @@ class KnowledgeStore:
             self._save()
         return page
 
+    def replace_with(self, page: KnowledgePage) -> KnowledgePage:
+        """
+        Single-KB mode: keep only one knowledge page in storage.
+        """
+        self._pages = {page.slug: page}
+        self._save()
+        return page
+
     def get(self, slug: str) -> Optional[KnowledgePage]:
         return self._pages.get(slug)
 
@@ -44,13 +52,15 @@ class KnowledgeStore:
             result.setdefault(page.chapter, []).append(page)
         return result
 
-    def search(self, query: str, limit: int = 5) -> List[KnowledgePage]:
+    def search(self, query: str, limit: int = 5, allowed_slugs: Optional[set[str]] = None) -> List[KnowledgePage]:
         query_tokens = self._tokenize(query)
         if not query_tokens:
             return []
 
         scored = []
         for page in self._pages.values():
+            if allowed_slugs is not None and page.slug not in allowed_slugs:
+                continue
             haystack = f"{page.title}\n{page.markdown}"
             haystack_tokens = self._tokenize(haystack)
             if not haystack_tokens:
@@ -64,7 +74,12 @@ class KnowledgeStore:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [page for _, page in scored[:limit]]
 
-    def search_snippets(self, query: str, limit: int = 6) -> List[dict]:
+    def search_snippets(
+        self,
+        query: str,
+        limit: int = 6,
+        allowed_slugs: Optional[set[str]] = None,
+    ) -> List[dict]:
         """
         Return most relevant text fragments across pages for RAG answers.
         """
@@ -74,6 +89,8 @@ class KnowledgeStore:
 
         scored: List[tuple[int, dict]] = []
         for page in self._pages.values():
+            if allowed_slugs is not None and page.slug not in allowed_slugs:
+                continue
             for snippet in self._split_into_snippets(page.markdown):
                 snippet_tokens = self._tokenize(snippet)
                 if not snippet_tokens:

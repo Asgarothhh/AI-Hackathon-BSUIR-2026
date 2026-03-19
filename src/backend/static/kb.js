@@ -45,6 +45,7 @@ if (askBtn) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           question,
+          source_slug: pageSlug,
           allow_edit: Boolean(allowEditNode && allowEditNode.checked),
           target_slug: pageSlug,
         }),
@@ -130,6 +131,7 @@ if (saveBtn) {
 }
 
 if (sidebarSearchNode) {
+  indexSidebarBySectionText();
   sidebarSearchNode.addEventListener("input", () => filterSidebarChapters(sidebarSearchNode.value));
 }
 
@@ -215,29 +217,24 @@ function renderSourceCard(source) {
   const card = document.createElement("div");
   card.className = "source-card";
 
-  const titleNode = document.createElement("div");
+  const titleNode = document.createElement("a");
   titleNode.className = "source-card-title";
+  const hl = encodeURIComponent(String(source.highlightText || source.preview || ""));
+  titleNode.href = `${source.link}?hl=${hl}`;
   titleNode.textContent = `${source.title} · ${source.chapter}`;
+  titleNode.addEventListener("click", (event) => {
+    event.preventDefault();
+    showWhere(source.link, source.highlightText);
+  });
   card.appendChild(titleNode);
 
-  if (source.preview) {
+  const evidenceText = String(source.evidenceText || source.highlightText || source.preview || "").trim();
+  if (evidenceText) {
     const evidence = document.createElement("div");
     evidence.className = "source-evidence";
-    evidence.textContent = source.preview;
+    evidence.textContent = evidenceText;
     card.appendChild(evidence);
   }
-
-  const actions = document.createElement("div");
-  actions.className = "source-card-actions";
-  const btn = document.createElement("button");
-  btn.className = "download-btn";
-  btn.type = "button";
-  btn.textContent = "Показать где";
-  btn.addEventListener("click", (event) =>
-    showWhere(source.link, source.highlightText, event.currentTarget)
-  );
-  actions.appendChild(btn);
-  card.appendChild(actions);
 
   return card;
 }
@@ -246,10 +243,8 @@ function isRenderableSource(source) {
   if (!source || typeof source !== "object") return false;
   const link = String(source.link || "").trim();
   const highlightText = String(source.highlightText || "").trim();
-  const preview = String(source.preview || "").trim();
   if (!link.startsWith("/kb/")) return false;
   if (highlightText.length < 5) return false;
-  if (preview.length < 3) return false;
   return true;
 }
 
@@ -405,17 +400,49 @@ function filterSidebarChapters(query) {
   chapters.forEach((chapter) => {
     chapter.classList.remove(SIDEBAR_HIGHLIGHT_CLASS);
     const title = chapter.dataset.title || "";
-    const chapterName = chapter.dataset.chapter || "";
+    const sectionText = chapter.dataset.content || "";
     if (!needle) {
       chapter.style.display = "";
       return;
     }
-    const haystack = `${title} ${chapterName}`;
+    const haystack = `${title} ${sectionText}`;
     const match = normalizeText(haystack).includes(needle);
     chapter.style.display = match ? "" : "none";
     if (match) {
       chapter.classList.add(SIDEBAR_HIGHLIGHT_CLASS);
     }
+  });
+}
+
+function indexSidebarBySectionText() {
+  const markdown = document.querySelector(".markdown");
+  if (!markdown) return;
+  const chapterNodes = Array.from(document.querySelectorAll(".sidebar .chapter"));
+  if (chapterNodes.length === 0) return;
+
+  const anchors = Array.from(markdown.querySelectorAll("h2 a[id], h3 a[id], h4 a[id]"));
+  const index = new Map();
+  for (const anchor of anchors) {
+    const id = anchor.getAttribute("id");
+    if (!id) continue;
+    const heading = anchor.closest("h2,h3,h4");
+    if (!heading) continue;
+    let text = "";
+    let node = heading.nextElementSibling;
+    while (node && !/^H[234]$/.test(node.tagName)) {
+      text += ` ${node.textContent || ""}`;
+      node = node.nextElementSibling;
+    }
+    index.set(id, normalizeText(text).slice(0, 3000));
+  }
+
+  chapterNodes.forEach((chapter) => {
+    const link = chapter.querySelector("a[href^='#']");
+    if (!link) return;
+    const href = link.getAttribute("href") || "";
+    const anchor = href.replace(/^#/, "").trim();
+    if (!anchor) return;
+    chapter.dataset.content = index.get(anchor) || "";
   });
 }
 
@@ -440,7 +467,8 @@ function showWhere(link, excerpt, clickedButton) {
     }
     return;
   }
-  window.location.href = `${link}?hl=${encodeURIComponent(excerpt)}`;
+  const targetUrl = `${link}?hl=${encodeURIComponent(excerpt || "")}`;
+  window.open(targetUrl, "_blank", "noopener,noreferrer");
 }
 
 function clearHighlights() {

@@ -22,12 +22,8 @@
         <section
           class="chapter chapter-l{{ item.level }}"
           data-title="{{ item.title|lower }}"
-          data-chapter="{{ item.chapter|lower }}"
         >
           <h4><a href="#{{ item.anchor }}">{{ item.title }}</a></h4>
-          {% if item.chapter and item.chapter != item.title and item.chapter|lower != "главы документа" %}
-          <div class="chapter-meta">Глава: {{ item.chapter }}</div>
-          {% endif %}
         </section>
         {% endfor %}
         {% else %}

@@ -2,6 +2,7 @@ import logging
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -351,6 +352,198 @@ class KnowledgeBaseBuilderAgent:
         )
         return markdown
 
+    def build_single_kb_fast(self, title: str, chapter: str, documents: List[Dict[str, str]]) -> str:
+        """
+        Fast, deterministic builder for large file sets.
+        Includes every non-empty source document and avoids heavy per-chunk LLM calls.
+        """
+        non_empty_docs = []
+        for idx, doc in enumerate(documents, start=1):
+            name = (doc.get("name") or f"Документ {idx}").strip()
+            content = (doc.get("content") or "").strip()
+            if not content:
+                continue
+            non_empty_docs.append({"name": name, "content": content})
+
+        if not non_empty_docs:
+            raise ValueError("No non-empty documents provided")
+
+        total_chars = sum(len(item["content"]) for item in non_empty_docs)
+        lines: List[str] = [
+            f"# {title}",
+            "",
+            "## Подробная выдержка",
+            "",
+            (
+                f"База знаний собрана из {len(non_empty_docs)} файлов. "
+                f"Суммарный объем текста: {total_chars} символов."
+            ),
+            "",
+            "## Главы документа",
+            "",
+        ]
+
+        for idx, item in enumerate(non_empty_docs, start=1):
+            chapter_title = item["name"]
+            anchor = self._anchor_slug(f"src-{chapter_title}-{idx}")
+            lines.append(f'### <a id="{anchor}"></a>{chapter_title}')
+            lines.append("")
+            lines.append(item["content"])
+            lines.append("")
+
+        return "\n".join(lines).strip()
+
+    def build_single_kb_detailed_markdown(
+        self,
+        title: str,
+        chapter: str,
+        documents: List[Dict[str, str]],
+        progress_callback: Optional[Callable[[dict], None]] = None,
+    ) -> str:
+        """
+        Build one detailed markdown knowledge base from all input files.
+        Each file is summarized with LLM (chunk-safe) and added as its own section.
+        """
+        prepared_docs: List[Dict[str, str]] = []
+        for idx, doc in enumerate(documents, start=1):
+            name = (doc.get("name") or f"Документ {idx}").strip()
+            content = (doc.get("content") or "").strip()
+            if not content:
+                continue
+            prepared_docs.append({"name": name, "content": content})
+        if not prepared_docs:
+            raise ValueError("No non-empty documents provided")
+
+        workers = max(1, int(os.getenv("KB_DOC_WORKERS", "2")))
+        extracted_by_idx: Dict[int, dict] = {}
+        failures: List[str] = []
+
+        def _process_doc(doc_idx: int, doc_name: str, doc_content: str) -> tuple[int, str, dict]:
+            doc_title = f"{title} — {Path(doc_name).stem}"
+            extracted = self.process_documents_chunked(
+                title=doc_title,
+                chapter=chapter,
+                documents=[{"name": doc_name, "content": doc_content}],
+            )
+            return doc_idx, doc_name, extracted
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_meta = {}
+            for idx, doc in enumerate(prepared_docs, start=1):
+                if progress_callback:
+                    progress_callback(
+                        {"stage": "doc_started", "index": idx, "total": len(prepared_docs), "name": doc["name"]}
+                    )
+                future = executor.submit(_process_doc, idx, doc["name"], doc["content"])
+                future_to_meta[future] = (idx, doc["name"])
+
+            for future in as_completed(future_to_meta):
+                idx, doc_name = future_to_meta[future]
+                try:
+                    got_idx, _, extracted = future.result()
+                    extracted_by_idx[got_idx] = extracted
+                    if progress_callback:
+                        progress_callback(
+                            {
+                                "stage": "doc_done",
+                                "index": got_idx,
+                                "total": len(prepared_docs),
+                                "name": doc_name,
+                            }
+                        )
+                except Exception as exc:
+                    failures.append(f"{doc_name}: {exc}")
+                    if progress_callback:
+                        progress_callback(
+                            {
+                                "stage": "doc_error",
+                                "index": idx,
+                                "total": len(prepared_docs),
+                                "name": doc_name,
+                                "detail": str(exc),
+                            }
+                        )
+
+        if not extracted_by_idx:
+            raise ValueError("Failed to extract knowledge from documents: " + "; ".join(failures[:5]))
+
+        all_extracted = [extracted_by_idx[i] for i in sorted(extracted_by_idx.keys())]
+        global_merged = self._merge_extractions(all_extracted, title, chapter)
+
+        lines: List[str] = [
+            f"# {title}",
+            "",
+            "## Подробная выдержка",
+            "",
+            global_merged.get("summary", ""),
+            "",
+            "## Ключевые тезисы",
+            "",
+        ]
+        for point in global_merged.get("key_points", [])[:40]:
+            lines.append(f"- {point}")
+        lines.append("")
+
+        lines += ["## Детальные выдержки по файлам", ""]
+        for idx, extracted in enumerate(all_extracted, start=1):
+            src_title = prepared_docs[idx - 1]["name"]
+            anchor = self._anchor_slug(f"source-{src_title}-{idx}")
+            lines.append(f'### <a id="{anchor}"></a>{src_title}')
+            lines.append("")
+            lines.append((extracted.get("summary") or "").strip())
+            lines.append("")
+
+            key_points = extracted.get("key_points", []) or []
+            if key_points:
+                lines.append("#### Ключевые пункты")
+                lines.append("")
+                for item in key_points[:20]:
+                    lines.append(f"- {item}")
+                lines.append("")
+
+            detailed_outline = extracted.get("detailed_outline", []) or []
+            if detailed_outline:
+                lines.append("#### Подробная структура")
+                lines.append("")
+                for item in detailed_outline[:30]:
+                    lines.append(f"- {item}")
+                lines.append("")
+
+            definitions = extracted.get("definitions", []) or []
+            if definitions:
+                lines.append("#### Определения")
+                lines.append("")
+                lines.append("| Термин | Определение |")
+                lines.append("|---|---|")
+                for d in definitions[:40]:
+                    term = self._escape_table_cell(str(d.get("term", "")).strip())
+                    definition = self._escape_table_cell(str(d.get("definition", "")).strip())
+                    if term and definition:
+                        lines.append(f"| {term} | {definition} |")
+                lines.append("")
+
+            faqs = extracted.get("faqs", []) or []
+            if faqs:
+                lines.append("#### FAQ")
+                lines.append("")
+                lines.append("| Вопрос | Ответ |")
+                lines.append("|---|---|")
+                for f in faqs[:20]:
+                    q = self._escape_table_cell(str(f.get("question", "")).strip())
+                    a = self._escape_table_cell(str(f.get("answer", "")).strip())
+                    if q and a:
+                        lines.append(f"| {q} | {a} |")
+                lines.append("")
+
+        if failures:
+            lines += ["## Ошибки обработки", ""]
+            for err in failures[:30]:
+                lines.append(f"- {err}")
+            lines.append("")
+
+        markdown = "\n".join(lines).strip()
+        return self._autolink_defined_terms(markdown, global_merged.get("definitions", []) or [])
+
     def enrich_created_markdown(self, title: str, chapter: str, markdown: str, chunk_results: List[dict]) -> str:
         """
         Editing tool for a freshly created KB article.
@@ -429,7 +622,8 @@ class KnowledgeBaseBuilderAgent:
         for line in markdown.splitlines():
             stripped = line.strip()
             # Do not inject definition links into headings to avoid noisy sidebar labels.
-            if stripped.startswith("#"):
+            # Also skip markdown table rows to avoid noisy links in FAQ/definition tables.
+            if stripped.startswith("#") or stripped.startswith("|"):
                 out_lines.append(line)
                 continue
 
