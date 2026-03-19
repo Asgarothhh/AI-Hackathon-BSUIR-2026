@@ -1,9 +1,33 @@
+import os
+
+from dotenv import load_dotenv
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.constants import Send
+from langchain_openai import ChatOpenAI
 
 from src.rag.agents import states
 from src.rag.agents.llm import planner, analyst_llm
 from src.rag.tools.web_search import search_sources, TRUSTED_LEGAL_DOMAINS
+
+load_dotenv()
+
+
+def get_llm(model_name: str | None = None) -> ChatOpenAI:
+    """
+    Shared LLM factory for all modules that need direct model calls.
+    """
+    resolved_model = (
+        model_name
+        or os.getenv("OPENROUTER_MODEL")
+        or os.getenv("MINI_RAG_MODEL")
+        or "openai/gpt-4o-mini"
+    )
+    return ChatOpenAI(
+        model=resolved_model,
+        api_key=os.environ.get("OPENROUTER_API_KEY"),
+        base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+        temperature=0,
+    )
 
 
 # def orchestrator(state: states.State):

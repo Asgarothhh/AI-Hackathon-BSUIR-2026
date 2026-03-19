@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
 from src.backend.routers.kb_router import router as kb_router
+from src.backend.routers.rag_router import router as rag_router
 
 load_dotenv()
 
@@ -25,5 +26,6 @@ app = FastAPI(
 )
 
 app.include_router(kb_router)
+app.include_router(rag_router)
 app.mount("/kb-static", StaticFiles(directory="src/backend/static"), name="kb-static")
 
