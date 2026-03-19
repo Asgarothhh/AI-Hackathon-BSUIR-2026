@@ -1,13 +1,25 @@
+import os
+
+from dotenv import load_dotenv
+from langgraph.cache.redis import RedisCache
+from langgraph.graph import StateGraph, START, END
+from langgraph.types import RetryPolicy
+
 from src.rag.agents import states
 from src.rag.agents.llm_call import (
     orchestrator, worker,
-    assign_analysts,syntheziser
+    assign_analysts, syntheziser
 )
-from langgraph.graph import StateGraph, START, END
+
+load_dotenv()
+
+redis_cache = RedisCache(uri=os.getenv("REDIS_URI"))
 
 builder = StateGraph(states.State)
 
-builder.add_node("orchestrator", orchestrator)
+builder.add_node("orchestrator",
+                 orchestrator,
+                 retry_policy=RetryPolicy(ttl=120, ))
 builder.add_node("worker", worker)
 builder.add_node("synthesizer", syntheziser)
 
@@ -21,7 +33,7 @@ builder.add_conditional_edges(
 builder.add_edge("worker", "synthesizer")
 builder.add_edge("synthesizer", END)
 
-analyzer_model = builder.compile()
+analyzer_model = builder.compile(cache=redis_cache)
 
 initial_input = {
     "old_doc_text": """
