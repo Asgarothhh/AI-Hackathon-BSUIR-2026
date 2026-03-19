@@ -1,31 +1,13 @@
-import asyncio
-import logging
-
-from dotenv import load_dotenv
-from langgraph.graph import StateGraph, START, END
-from langgraph.types import RetryPolicy
-
 from src.rag.agents import states
 from src.rag.agents.llm_call import (
     orchestrator, worker,
-    assign_analysts, syntheziser
+    assign_analysts,syntheziser
 )
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s"
-)
-logger = logging.getLogger(__name__)
-
-load_dotenv()
+from langgraph.graph import StateGraph, START, END
 
 builder = StateGraph(states.State)
 
-builder.add_node(
-    "orchestrator",
-    orchestrator,
-    retry_policy=RetryPolicy(),
-)
+builder.add_node("orchestrator", orchestrator)
 builder.add_node("worker", worker)
 builder.add_node("synthesizer", syntheziser)
 
@@ -59,7 +41,9 @@ initial_input = {
 }
 
 # final_state = analyzer_model.invoke(initial_input)
-# logger.info(final_state["final_report_metadata"]["text"])
+# print(final_state["final_report_metadata"]["text"])
+
+import asyncio
 
 
 async def run_analysis():
@@ -80,35 +64,32 @@ async def run_analysis():
         """
     }
 
-    logger.info("🚀 Запуск юридического анализа...")
-    logger.info("💡 Совет: Если долго нет ответа, проверь VPN или API Key.")
+    print("🚀 Запуск юридического анализа...")
+    print("💡 Совет: Если долго нет ответа, проверь VPN или API Key.")
 
     try:
         async for chunk in analyzer_model.astream(initial_input, stream_mode="updates"):
             for node_name, output in chunk.items():
-                logger.debug(f"[DEBUG] Завершен узел: {node_name}")
+                # ВАЖНО: Имя узла должно совпадать с тем, что в builder.add_node
+                print(f"\n[DEBUG] Завершен узел: {node_name}")
 
                 if node_name == "orchestrator":
                     sections = output.get("sections_to_analyze", [])
-                    logger.info(f"✅ Оркестратор разбил документ на {len(sections)} частей.")
+                    print(f"✅ Оркестратор разбил документ на {len(sections)} частей.")
 
-                elif node_name == "worker":
+                elif node_name == "worker":  # ИСПРАВЛЕНО с legal_worker на worker
+                    # Берём последний результат из списка
                     analysis = output["completed_analysis"][-1]
-                    risk_color = {
-                        "red": "🔴",
-                        "yellow": "🟡",
-                        "green": "🟢"
-                    }.get(analysis.risks[0].risk_level, "⚪")
-
-                    logger.info(f"{risk_color} Проверен пункт {analysis.section_id}")
+                    risk_color = {"red": "🔴", "yellow": "🟡", "green": "🟢"}.get(analysis.risks[0].risk_level, "⚪")
+                    print(f"{risk_color} Проверен пункт {analysis.section_id}")
 
                 elif node_name == "synthesizer":
-                    print("🏁 АНАЛИЗ ЗАВЕРШЕН. ФОРМИРУЮ ОТЧЕТ...")
+                    print("\n🏁 АНАЛИЗ ЗАВЕРШЕН. ФОРМИРУЮ ОТЧЕТ...")
                     print("-" * 30)
                     print(output["final_report_metadata"]["text"])
 
     except Exception as e:
-        logger.exception(f"❌ Произошла ошибка при выполнении графа: {e}")
+        print(f"\n❌ Произошла ошибка при выполнении графа: {e}")
 
 
 if __name__ == "__main__":

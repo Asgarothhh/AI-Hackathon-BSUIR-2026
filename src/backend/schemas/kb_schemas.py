@@ -1,0 +1,60 @@
+from typing import List, Optional
+
+from pydantic import BaseModel, Field
+
+
+class BuildKnowledgeBaseRequest(BaseModel):
+    title: str = Field(..., description="Knowledge base name")
+    chapter: str = Field(default="General", description="Chapter in left sidebar")
+    document_text: str = Field(..., description="Raw input document")
+    sources: List[str] = Field(default_factory=list)
+    images: List[str] = Field(default_factory=list)
+
+
+class BuildKnowledgeBaseResponse(BaseModel):
+    slug: str
+    title: str
+    chapter: str
+    markdown: str
+
+
+class BatchBuildKnowledgeBaseRequest(BaseModel):
+    pages: List[BuildKnowledgeBaseRequest] = Field(
+        ..., description="List of documents for bulk KB build"
+    )
+
+
+class BatchBuildKnowledgeBaseResponse(BaseModel):
+    pages: List[BuildKnowledgeBaseResponse]
+
+
+class BuildFromUploadsRequest(BaseModel):
+    chapter: str = Field(default="Uploads", description="Chapter for generated pages")
+    file_names: List[str] = Field(
+        default_factory=list,
+        description="Optional list of file names from uploads folder. Empty means all files.",
+    )
+    combine_into_single_page: bool = Field(
+        default=True,
+        description="If true, build one detailed page from all selected files.",
+    )
+    combined_title: Optional[str] = Field(
+        default=None,
+        description="Optional title for the combined page.",
+    )
+
+
+class PageUpdateRequest(BaseModel):
+    markdown: str
+
+
+class AskRequest(BaseModel):
+    question: str
+    allow_edit: bool = False
+    target_slug: Optional[str] = None
+
+
+class AskResponse(BaseModel):
+    answer: str
+    edited: bool = False
+    edited_slug: Optional[str] = None

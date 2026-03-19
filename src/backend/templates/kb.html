@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ page.title }} - Knowledge Base</title>
+    <link rel="stylesheet" href="/kb/theme/style.css" />
+    <link rel="stylesheet" href="/kb-static/kb.css" />
+  </head>
+  <body data-slug="{{ page.slug }}" data-can-edit="{{ '1' if can_edit else '0' }}">
+    <div class="layout">
+      <aside class="sidebar">
+        <h3>Главы документа</h3>
+        <input
+          id="sidebar-search"
+          class="sidebar-search"
+          type="text"
+          placeholder="Поиск по пунктам и главам..."
+        />
+        {% if chapter_nav %}
+        {% for item in chapter_nav %}
+        <section
+          class="chapter chapter-l{{ item.level }}"
+          data-title="{{ item.title|lower }}"
+          data-chapter="{{ item.chapter|lower }}"
+        >
+          <h4><a href="#{{ item.anchor }}">{{ item.title }}</a></h4>
+          {% if item.chapter and item.chapter != item.title and item.chapter|lower != "главы документа" %}
+          <div class="chapter-meta">Глава: {{ item.chapter }}</div>
+          {% endif %}
+        </section>
+        {% endfor %}
+        {% else %}
+        <p class="muted">Главы появятся после построения подробной базы знаний.</p>
+        {% endif %}
+      </aside>
+
+      <main class="content">
+        <div class="content-header">
+          <h1>{{ page.title }}</h1>
+          <span class="badge">role: {{ user_role }}</span>
+        </div>
+        <div class="content-scroll">
+          <article class="markdown">{{ html|safe }}</article>
+
+          {% if can_edit %}
+          <section class="editor">
+            <h3>Редактирование (Markdown)</h3>
+            <textarea id="md-editor">{{ page.markdown }}</textarea>
+            <button id="save-btn">Сохранить</button>
+          </section>
+          {% endif %}
+
+          {% if sources_meta %}
+          <section class="sources-card">
+            <h3>Источники</h3>
+            <ul class="source-list">
+              {% for src in sources_meta %}
+              <li class="source-row">
+                <a href="{{ src.url }}" target="_blank" rel="noopener noreferrer">{{ src.name }}</a>
+                <a class="download-btn" href="{{ src.download_url }}">Скачать</a>
+              </li>
+              {% endfor %}
+            </ul>
+          </section>
+          {% endif %}
+        </div>
+      </main>
+
+      <aside class="rag-panel">
+        <h3>Mini RAG</h3>
+        <div id="rag-chat" class="rag-chat"></div>
+        <div id="typing-status" class="typing-status" aria-live="polite"></div>
+        <div class="rag-input">
+          <div class="rag-input-bar">
+            <textarea id="rag-question" rows="1" placeholder="Спросите у Mini RAG..."></textarea>
+            <button id="ask-btn" class="ask-arrow-btn" type="button" aria-label="Отправить">
+              &rarr;
+            </button>
+          </div>
+          {% if can_edit %}
+          <label class="edit-permission-toggle" for="allow-edit" title="Разрешить правку текущей страницы">
+            <span class="pen-icon" aria-hidden="true">✎</span>
+            <input type="checkbox" id="allow-edit" />
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          </label>
+          {% endif %}
+        </div>
+      </aside>
+    </div>
+
+    <script src="/kb-static/kb.js"></script>
+  </body>
+  </html>

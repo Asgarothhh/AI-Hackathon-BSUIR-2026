@@ -1,11 +1,21 @@
 import operator
-from typing import Annotated, List, Literal, Optional, TypedDict
+from typing import Annotated, Dict, List, Literal, Optional, TypedDict
 
 from pydantic import BaseModel, Field
 
 
+class KnowledgeDraft(TypedDict):
+    title: str
+    chapter: str
+    summary: str
+    key_points: List[str]
+    definitions: List[Dict[str, str]]
+    sources: List[str]
+    images: List[str]
+
+
 class LegalChange(BaseModel):
-    """"Описание конкретного изменения в тексте"""
+    """Описание конкретного изменения в тексте."""
     was_text: str = Field(description="Исходная формулировка (Старая редакция)")
     became_text: str = Field(description="Новая формулировка (Новая редакция)")
     change_type: Literal["structural", "semantic"] = Field(description="Тип изменения: структурное или смысловое")
