@@ -1,7 +1,9 @@
+import { useNavigate } from "react-router-dom";
 import { useSidebar } from "../../../contexts/SidebarContext";
 import AsideTool from "./AsideTool";
 
 export default function Aside() {
+    const navigate = useNavigate()
     const { setIsExpanded } = useSidebar()
 
     const handleNavigate = () => {
@@ -18,6 +20,12 @@ export default function Aside() {
                 <AsideTool onClick={() => setIsExpanded(prev => !prev)} toolIcon="/icon/sidebar/burger-menu.svg" />
                 <AsideTool onClick={handleNavigate} toolIcon="/icon/sidebar/table.svg">
                     База знаний
+                </AsideTool>
+                <AsideTool onClick={() => {
+                    setIsExpanded(false)
+                    navigate("/history")
+                }} toolIcon="/icon/sidebar/history.svg">
+                    История
                 </AsideTool>
             </div>
             <div>

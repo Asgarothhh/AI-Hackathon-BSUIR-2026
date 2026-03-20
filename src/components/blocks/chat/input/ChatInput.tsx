@@ -1,11 +1,9 @@
 import { useState, type ChangeEvent } from "react";
 import ChatInputTools from "./ChatInputTools";
 import { uploadFiles } from "../../../../api/file";
-import { useNavigate } from "react-router-dom";
 import { useAnswer } from "../../../../contexts/AnswerContext";
 
 export default function ChatInput() {
-    const navigation = useNavigate()
 
     const [file1, setFile1] = useState<File | null>(null);
     const [file2, setFile2] = useState<File | null>(null);
@@ -27,8 +25,6 @@ export default function ChatInput() {
         const result: any = await uploadFiles(file1, file2)
 
         setAnswerContent(result.report_markdown!)
-
-        navigation("/history")
     }
 
     return (
