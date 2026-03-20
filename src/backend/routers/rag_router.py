@@ -1,8 +1,11 @@
 import os
 import re
+import logging
+import warnings
 from io import BytesIO
 from typing import Any
 from uuid import uuid4
+from collections import Counter
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
@@ -25,6 +28,7 @@ from src.backend.services.mini_rag import (
 from src.rag.agents.llm_call import get_llm
 
 router = APIRouter(prefix="/rag", tags=["rag"])
+logger = logging.getLogger(__name__)
 
 
 def _read_uploaded_text(upload: UploadFile) -> str:
@@ -38,14 +42,143 @@ def _read_uploaded_text(upload: UploadFile) -> str:
     if suffix == ".pdf":
         try:
             from pypdf import PdfReader
+            from pypdf.errors import PdfReadWarning
         except Exception as exc:
             raise HTTPException(status_code=503, detail="PDF parsing requires pypdf") from exc
+        warnings.filterwarnings("ignore", category=PdfReadWarning)
+        logging.getLogger("pypdf").setLevel(logging.ERROR)
         reader = PdfReader(BytesIO(raw), strict=False)
         pages = []
         for page in list(reader.pages)[:80]:
             pages.append((page.extract_text() or "").strip())
         return "\n\n".join([p for p in pages if p]).strip()
     raise HTTPException(status_code=400, detail=f"Unsupported file format: {suffix or 'unknown'}")
+
+
+def _split_sentences(text: str) -> list[str]:
+    raw = re.split(r"(?<=[\.\!\?])\s+|\n+", (text or "").strip())
+    out: list[str] = []
+    for sentence in raw:
+        s = sentence.strip()
+        if len(s) >= 35:
+            out.append(s)
+    return out
+
+
+def _normalize(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-zа-яё0-9\s]", " ", (text or "").lower(), flags=re.I)).strip()
+
+
+def _tokens(text: str) -> set[str]:
+    return {t for t in _normalize(text).split(" ") if len(t) >= 3}
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    union = len(a | b)
+    if union == 0:
+        return 0.0
+    return inter / union
+
+
+def _best_pairs(removed: list[str], added: list[str], *, max_pairs: int = 40) -> list[tuple[str, str, float]]:
+    removed_pool = [(r, _tokens(r)) for r in removed]
+    added_pool = [(a, _tokens(a)) for a in added]
+    used_added: set[int] = set()
+    pairs: list[tuple[str, str, float]] = []
+
+    for r_text, r_tokens in removed_pool:
+        best_idx = -1
+        best_score = 0.0
+        for idx, (a_text, a_tokens) in enumerate(added_pool):
+            if idx in used_added:
+                continue
+            score = _jaccard(r_tokens, a_tokens)
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+        # Threshold keeps only meaningful "changed from -> to" pairs.
+        if best_idx != -1 and best_score >= 0.16:
+            used_added.add(best_idx)
+            pairs.append((r_text, added_pool[best_idx][0], best_score))
+            if len(pairs) >= max_pairs:
+                break
+
+    # Add unpaired removed/added rows (still useful for audit).
+    if len(pairs) < max_pairs:
+        for r_text, _ in removed_pool:
+            if any(r_text == p[0] for p in pairs):
+                continue
+            pairs.append((r_text, "—", 0.0))
+            if len(pairs) >= max_pairs:
+                break
+    if len(pairs) < max_pairs:
+        for idx, (a_text, _) in enumerate(added_pool):
+            if idx in used_added:
+                continue
+            pairs.append(("—", a_text, 0.0))
+            if len(pairs) >= max_pairs:
+                break
+    return pairs
+
+
+def _simple_compare_report(old_text: str, new_text: str, *, old_name: str, new_name: str) -> str:
+    old_sentences = _split_sentences(old_text)
+    new_sentences = _split_sentences(new_text)
+    old_counter = Counter(_normalize(s) for s in old_sentences if _normalize(s))
+    new_counter = Counter(_normalize(s) for s in new_sentences if _normalize(s))
+    kept_count = sum((old_counter & new_counter).values())
+
+    removed: list[str] = []
+    added: list[str] = []
+    for sentence in old_sentences:
+        key = _normalize(sentence)
+        if not key:
+            continue
+        if new_counter.get(key, 0) > 0:
+            new_counter[key] -= 1
+        else:
+            removed.append(sentence)
+    # rebuild for additions to preserve new doc order
+    old_counter = Counter(_normalize(s) for s in old_sentences if _normalize(s))
+    for sentence in new_sentences:
+        key = _normalize(sentence)
+        if not key:
+            continue
+        if old_counter.get(key, 0) > 0:
+            old_counter[key] -= 1
+        else:
+            added.append(sentence)
+
+    lines = [
+        "# Отчет об анализе изменений НПА",
+        "",
+        f"Старый файл: {old_name}",
+        f"Новый файл: {new_name}",
+        "",
+        "| Пункт | Было | Стало | Риск | Рекомендация | Ссылка |",
+        "|-------|------|-------|------|--------------|--------|",
+    ]
+    pairs = _best_pairs(removed, added, max_pairs=40)
+    if not pairs:
+        pairs = [("—", "—", 0.0)]
+    for idx, (was_text, became_text, score) in enumerate(pairs, start=1):
+        rec = (
+            "Проверить вручную: найдено вероятное соответствие фрагментов."
+            if score >= 0.16
+            else "Проверить вручную: фрагмент без надежной пары."
+        )
+        lines.append(
+            f"| {idx} | {was_text} | {became_text} | ⚪ unknown | {rec} | Нет |"
+        )
+    lines += [
+        "",
+        f"_Совпадающих фрагментов: {kept_count}; удалено: {len(removed)}; добавлено: {len(added)}._",
+    ]
+
+    return "\n".join(lines).strip()
 
 
 def _split_with_overlap(text: str, chunk_size: int, overlap: int) -> list[str]:
@@ -223,24 +356,25 @@ async def rag_compare_upload(
         raise HTTPException(status_code=400, detail="new_file is empty after parsing")
 
     try:
-        from src.rag.agents.graph import analyzer_model
+        from src.rag.agents.graph import analyze_documents
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Analyzer model unavailable: {exc}") from exc
 
     try:
-        result = await analyzer_model.ainvoke(
-            {
-                "old_doc_text": old_text,
-                "new_doc_text": new_text,
-                "completed_analysis": [],
-            }
-        )
+        report = await analyze_documents(old_text, new_text)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"RAG compare failed: {exc}") from exc
-
-    report = ""
-    if isinstance(result, dict):
-        report = str((result.get("final_report_metadata") or {}).get("text") or "").strip()
+        logger.warning("RAG compare LLM analyzer failed, using local fallback: %s", exc)
+        fallback_report = _simple_compare_report(
+            old_text,
+            new_text,
+            old_name=old_file.filename or "old_file",
+            new_name=new_file.filename or "new_file",
+        )
+        return RagCompareResponse(
+            old_file=old_file.filename or "old_file",
+            new_file=new_file.filename or "new_file",
+            report_markdown=fallback_report,
+        )
     if not report:
         report = "Отчет не сформирован."
 

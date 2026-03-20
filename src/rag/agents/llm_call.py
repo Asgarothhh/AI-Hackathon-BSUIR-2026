@@ -1,4 +1,6 @@
 import os
+import logging
+import re
 
 from dotenv import load_dotenv
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -10,6 +12,7 @@ from src.rag.agents.llm import planner, analyst_llm
 from src.rag.tools.web_search import search_sources, TRUSTED_LEGAL_DOMAINS
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 
 def get_llm(model_name: str | None = None) -> ChatOpenAI:
@@ -51,33 +54,48 @@ def get_llm(model_name: str | None = None) -> ChatOpenAI:
 #     return {"sections_to_analyze": response.sections}
 
 async def orchestrator(state: states.State):
-    prompt = "Разбей документы на логические пары пунктов. Не анализируй риски!"
+    prompt = (
+        "Разбей документы на логические пары пунктов. Не анализируй риски. "
+        "Верни только ключевые измененные пункты (максимум 40). "
+        "Ответ должен быть кратким и строго структурированным."
+    )
+    old_doc = _clip_for_planner(state.get("old_doc_text", ""))
+    new_doc = _clip_for_planner(state.get("new_doc_text", ""))
 
-    # Получаем легкий JSON (сэкономит ~70% токенов)
-    response = await planner.ainvoke([
-        SystemMessage(content=prompt),
-        HumanMessage(content=f"Old: {state['old_doc_text']}\nNew: {state['new_doc_text']}")
-    ])
+    # Deterministic path for large documents to avoid structured-output overflow.
+    if len(old_doc) + len(new_doc) > 12000:
+        full_sections = _build_sections_without_llm(old_doc, new_doc, max_sections=40)
+        logger.info("Orchestrator (fallback) создал %s секций для анализа", len(full_sections))
+        return {"sections_to_analyze": full_sections}
 
-    # ПРЕВРАЩАЕМ легкие модели в твои тяжелые AnalyzedSection
-    full_sections = []
-    for s in response.sections:
-        full_sections.append(states.AnalyzedSection(
-            section_id=s.section_id,
-            # Кладем тексты в изменения, чтобы воркер их подхватил
-            changes=[states.LegalChange(
-                was_text=s.old_text,
-                became_text=s.new_text,
-                change_type="semantic",
-                meaning_diff="Pending analysis..."
-            )],
-            risks=[]  # Пока пусто
-        ))
+    try:
+        response = await planner.ainvoke([
+            SystemMessage(content=prompt),
+            HumanMessage(content=f"Old: {old_doc}\nNew: {new_doc}")
+        ])
 
-    return {"sections_to_analyze": full_sections}
+        # ПРЕВРАЩАЕМ легкие модели в твои тяжелые AnalyzedSection
+        full_sections = []
+        for s in response.sections:
+            full_sections.append(states.AnalyzedSection(
+                section_id=s.section_id,
+                changes=[states.LegalChange(
+                    was_text=s.old_text,
+                    became_text=s.new_text,
+                    change_type="semantic",
+                    meaning_diff="Pending analysis..."
+                )],
+                risks=[]
+            ))
+    except Exception as exc:
+        logger.warning("Planner failed in orchestrator, using deterministic fallback: %s", exc)
+        full_sections = _build_sections_without_llm(old_doc, new_doc, max_sections=40)
+
+    logger.info("Orchestrator создал %s секций для анализа", len(full_sections))
+    return {"sections_to_analyze": full_sections[:40]}
 
 
-def worker(state: states.WorkerState):
+async def worker(state: states.WorkerState):
     """
     Воркер: Проводит глубокий семантический анализ конкретного пункта
     и проверяет его на риски противоречия законодательству РБ.
@@ -91,7 +109,7 @@ def worker(state: states.WorkerState):
     """
 
     # Воркер возвращает заполненный объект AnalyzedSection
-    analysis = analyst_llm.invoke([
+    analysis = await analyst_llm.ainvoke([
         SystemMessage(content=prompt),
         HumanMessage(content=f"Анализируемый фрагмент: {section.model_dump()}")
     ])
@@ -133,10 +151,11 @@ def syntheziser(state: states.State):
         for change in item.changes:
             for risk in item.risks:
                 # Цветовая маркировка (эмуляция для Markdown/Docx)
-                risk_emoji = {"red": "🔴", "yellow": "🟡", "green": "🟢"}[risk.risk_level]
+                risk_emoji = {"red": "🔴", "yellow": "🟡", "green": "🟢"}.get(risk.risk_level, "⚪")
+                link_md = f"[Link]({risk.portal_link})" if risk.portal_link else "Нет"
 
                 line = (f"| {item.section_id} | {change.was_text} | {change.became_text} | "
-                        f"{risk_emoji} {risk.risk_level} | {risk.comment} | [Link]({risk.portal_link}) |")
+                        f"{risk_emoji} {risk.risk_level} | {risk.comment} | {link_md} |")
                 report_lines.append(line)
 
     return {"final_report_metadata": {"text": "\n".join(report_lines)}}
@@ -147,5 +166,80 @@ def assign_analysts(state: states.State):
     return [Send("worker", {"section": s, "hierarchy_level": "All"})
             for s in state["sections_to_analyze"]
     ]
+
+
+def _clip_for_planner(text: str, max_chars: int = 8000) -> str:
+    """
+    Protect orchestrator from context overflow on large files.
+    Keeps start+end where legal changes often live.
+    """
+    clean = re.sub(r"\s+", " ", (text or "")).strip()
+    if len(clean) <= max_chars:
+        return clean
+    head = clean[: max_chars // 2]
+    tail = clean[-(max_chars // 2) :]
+    return head + "\n\n...[TRUNCATED]...\n\n" + tail
+
+
+def _split_legal_chunks(text: str, chunk_chars: int = 700) -> list[str]:
+    clean = re.sub(r"\s+", " ", (text or "")).strip()
+    if not clean:
+        return []
+    # Prefer legal boundaries first.
+    parts = re.split(r"(?=(?:статья|пункт|глава|раздел)\s+\d+)", clean, flags=re.IGNORECASE)
+    parts = [p.strip() for p in parts if p.strip()]
+    if len(parts) <= 1:
+        # fallback by sentence windows
+        sentences = re.split(r"(?<=[\.\!\?;])\s+", clean)
+        parts = []
+        current = ""
+        for sent in sentences:
+            sent = sent.strip()
+            if not sent:
+                continue
+            candidate = (current + " " + sent).strip() if current else sent
+            if len(candidate) > chunk_chars and current:
+                parts.append(current)
+                current = sent
+            else:
+                current = candidate
+        if current:
+            parts.append(current)
+    return parts
+
+
+def _build_sections_without_llm(old_doc: str, new_doc: str, max_sections: int = 40) -> list[states.AnalyzedSection]:
+    old_parts = _split_legal_chunks(old_doc)
+    new_parts = _split_legal_chunks(new_doc)
+    total = max(len(old_parts), len(new_parts), 1)
+    out: list[states.AnalyzedSection] = []
+    for idx in range(total):
+        old_text = old_parts[idx] if idx < len(old_parts) else ""
+        new_text = new_parts[idx] if idx < len(new_parts) else ""
+        if not old_text and not new_text:
+            continue
+        if _normalize_for_compare(old_text) == _normalize_for_compare(new_text):
+            continue
+        out.append(
+            states.AnalyzedSection(
+                section_id=f"sec-{idx + 1}",
+                changes=[
+                    states.LegalChange(
+                        was_text=old_text[:1200],
+                        became_text=new_text[:1200],
+                        change_type="semantic",
+                        meaning_diff="Auto-detected diff (fallback orchestrator).",
+                    )
+                ],
+                risks=[],
+            )
+        )
+        if len(out) >= max_sections:
+            break
+    return out
+
+
+def _normalize_for_compare(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-zа-яё0-9\s]", " ", (text or "").lower(), flags=re.I)).strip()
 
 
