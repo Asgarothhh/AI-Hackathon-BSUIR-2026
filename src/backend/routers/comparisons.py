@@ -45,19 +45,6 @@ def create_comparison(payload: ComparisonCreateIn, db: Session = Depends(get_db)
     return ComparisonOut(id=comp.id, title=comp.title, status=comp.status, summary=None, risk_counts=None, report_id=comp.report_id)
 
 
-@router.get("/{comparison_id}", response_model=ComparisonOut)
-def get_comparison(comparison_id: int, db: Session = Depends(get_db)):
-    comp = db.query(Comparison).filter(Comparison.id == comparison_id).first()
-    if not comp:
-        raise HTTPException(status_code=404, detail="Comparison not found")
-    total = db.query(ChangeItem).filter(ChangeItem.comparison_id == comp.id).count()
-    red = db.query(ChangeItem).filter(ChangeItem.comparison_id == comp.id, ChangeItem.risk_level == "red").count()
-    yellow = db.query(ChangeItem).filter(ChangeItem.comparison_id == comp.id, ChangeItem.risk_level == "yellow").count()
-    green = db.query(ChangeItem).filter(ChangeItem.comparison_id == comp.id, ChangeItem.risk_level == "green").count()
-    summary = f"Найдено {total} изменений: {red} критических, {yellow} требующих проверки, {green} безопасных"
-    return ComparisonOut(id=comp.id, title=comp.title, status=comp.status, summary=summary, risk_counts={"green": green, "yellow": yellow, "red": red}, report_id=comp.report_id)
-
-
 @router.get("/track", response_model=PaginatedChangeItems)
 def get_track_all(
     comparison_id: Optional[int] = Query(None),
@@ -85,3 +72,16 @@ def get_track_all(
     total_pages = max(1, (total + per_page - 1) // per_page)
     items = base.order_by(ChangeItem.created_at.desc()).offset((page - 1) * per_page).limit(per_page).all()
     return PaginatedChangeItems(items=items, page=page, total_pages=total_pages)
+
+
+@router.get("/{comparison_id}", response_model=ComparisonOut)
+def get_comparison(comparison_id: int, db: Session = Depends(get_db)):
+    comp = db.query(Comparison).filter(Comparison.id == comparison_id).first()
+    if not comp:
+        raise HTTPException(status_code=404, detail="Comparison not found")
+    total = db.query(ChangeItem).filter(ChangeItem.comparison_id == comp.id).count()
+    red = db.query(ChangeItem).filter(ChangeItem.comparison_id == comp.id, ChangeItem.risk_level == "red").count()
+    yellow = db.query(ChangeItem).filter(ChangeItem.comparison_id == comp.id, ChangeItem.risk_level == "yellow").count()
+    green = db.query(ChangeItem).filter(ChangeItem.comparison_id == comp.id, ChangeItem.risk_level == "green").count()
+    summary = f"Найдено {total} изменений: {red} критических, {yellow} требующих проверки, {green} безопасных"
+    return ComparisonOut(id=comp.id, title=comp.title, status=comp.status, summary=summary, risk_counts={"green": green, "yellow": yellow, "red": red}, report_id=comp.report_id)
