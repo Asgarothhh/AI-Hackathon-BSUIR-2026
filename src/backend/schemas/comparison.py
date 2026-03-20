@@ -30,13 +30,13 @@ class ComparisonOut(BaseModel):
 
 class ChangeItemOut(BaseModel):
     id: int
-    kind: str
-    location: dict
-    before: Optional[str]
-    after: Optional[str]
-    linked_law: Optional[dict]
-    risk_level: Optional[str]
-    recommendation: Optional[str]
+    kind: Optional[str] = None
+    location: Optional[Any] = None
+    before: Optional[str] = None
+    after: Optional[str] = None
+    linked_law: Optional[Any] = None
+    risk_level: Optional[str] = None
+    recommendation: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

@@ -63,10 +63,11 @@ def get_track_all(
         base = base.filter(ChangeItem.comparison_id == comparison_id)
     if q:
         like = f"%{q}%"
+        from sqlalchemy import cast, String
         base = base.filter(
             (ChangeItem.before.ilike(like)) |
             (ChangeItem.after.ilike(like)) |
-            (ChangeItem.linked_law.cast(db.bind.dialect.type_descriptor(ChangeItem.linked_law.type)).ilike(like))
+            (cast(ChangeItem.linked_law, String).ilike(like))
         )
     total = base.count()
     total_pages = max(1, (total + per_page - 1) // per_page)
