@@ -77,6 +77,15 @@ def get_track_all(
     return PaginatedChangeItems(items=items, page=page, total_pages=total_pages)
 
 
+@router.get("/last/pdf")
+def export_last_comparison_pdf(db: Session = Depends(get_db)):
+    comp = db.query(Comparison).order_by(Comparison.created_at.desc()).first()
+    if not comp:
+        raise HTTPException(status_code=404, detail="No comparisons found")
+    
+    return export_comparison_pdf(comp.id, db)
+
+
 @router.get("/{comparison_id}/pdf")
 def export_comparison_pdf(comparison_id: int, db: Session = Depends(get_db)):
     comp = db.query(Comparison).filter(Comparison.id == comparison_id).first()
@@ -95,15 +104,6 @@ def export_comparison_pdf(comparison_id: int, db: Session = Depends(get_db)):
         media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
-
-
-@router.get("/last/pdf")
-def export_last_comparison_pdf(db: Session = Depends(get_db)):
-    comp = db.query(Comparison).order_by(Comparison.created_at.desc()).first()
-    if not comp:
-        raise HTTPException(status_code=404, detail="No comparisons found")
-    
-    return export_comparison_pdf(comp.id, db)
 
 
 @router.get("/{comparison_id}", response_model=ComparisonOut)

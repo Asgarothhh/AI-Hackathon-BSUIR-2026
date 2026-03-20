@@ -13,30 +13,23 @@ def generate_comparison_pdf(comparison, change_items) -> bytes:
     """
     Generates a PDF report for a document comparison using xhtml2pdf.
     """
-    # Use fallback if font doesn't exist (though it should on most Macs)
-    font_styling = ""
-    if os.path.exists(FONT_PATH):
-        font_styling = f"""
-        @font-face {{
-            font-family: 'Arial';
-            src: url('{FONT_PATH}');
-        }}
-        body {{ font-family: 'Arial'; }}
-        """
-    else:
-        logger.warning(f"Font not found at {FONT_PATH}, Cyrillic may be broken in PDF.")
-
+    # System font on Mac with good Cyrillic support
+    font_path = FONT_PATH
+    
     html = f"""
     <html>
     <head>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
     <style>
-        {font_styling}
-        body {{ font-family: 'Arial', sans-serif; font-size: 10pt; color: #333; }}
-        h1 {{ color: #1a5f7a; text-align: center; border-bottom: 2px solid #1a5f7a; padding-bottom: 10px; }}
-        .header-info {{ margin-bottom: 30px; background: #f8f9fa; padding: 15px; border-radius: 5px; }}
-        table {{ width: 100%; border-collapse: collapse; margin-top: 20px; table-layout: fixed; }}
-        th, td {{ border: 1px solid #dee2e6; padding: 12px; text-align: left; vertical-align: top; word-wrap: break-word; }}
+        @font-face {{
+            font-family: 'ArialUnicode';
+            src: url('{font_path}');
+        }}
+        body {{ font-family: 'ArialUnicode'; font-size: 10pt; color: #333; }}
+        h1 {{ font-family: 'ArialUnicode'; color: #1a5f7a; text-align: center; border-bottom: 2px solid #1a5f7a; padding-bottom: 10px; }}
+        .header-info {{ font-family: 'ArialUnicode'; margin-bottom: 30px; background: #f8f9fa; padding: 15px; border-radius: 5px; }}
+        table {{ font-family: 'ArialUnicode'; width: 100%; border-collapse: collapse; margin-top: 20px; table-layout: fixed; }}
+        th, td {{ font-family: 'ArialUnicode'; border: 1px solid #dee2e6; padding: 12px; text-align: left; vertical-align: top; word-wrap: break-word; }}
         th {{ background-color: #1a5f7a; color: white; font-weight: bold; width: 20%; }}
         .col-id {{ width: 10%; }}
         .col-text {{ width: 35%; }}
