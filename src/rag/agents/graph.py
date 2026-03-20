@@ -28,10 +28,11 @@ async def analyze_documents_stream(old_doc_text: str, new_doc_text: str) -> Asyn
         yield chunk
 
 
-async def analyze_documents(old_doc_text: str, new_doc_text: str) -> str:
+async def analyze_documents(old_doc_text: str, new_doc_text: str) -> tuple[str, list[Any]]:
     logger.info("🚀 Запуск юридического анализа...")
     logger.info("💡 Совет: Если долго нет ответа, проверь VPN или API Key.")
     final_report = ""
+    all_analysis = []
 
     async for chunk in analyze_documents_stream(old_doc_text, new_doc_text):
         for node_name, output in chunk.items():
@@ -43,6 +44,7 @@ async def analyze_documents(old_doc_text: str, new_doc_text: str) -> str:
                 analysis_items = output.get("completed_analysis") or []
                 if not analysis_items:
                     continue
+                all_analysis.extend(analysis_items)
                 analysis = analysis_items[-1]
                 risks = getattr(analysis, "risks", []) or []
                 risk_level = getattr(risks[0], "risk_level", "") if risks else ""
@@ -52,4 +54,4 @@ async def analyze_documents(old_doc_text: str, new_doc_text: str) -> str:
                 final_report = str((output.get("final_report_metadata") or {}).get("text") or "").strip()
                 logger.info("🏁 АНАЛИЗ ЗАВЕРШЕН. ФОРМИРУЮ ОТЧЕТ...")
 
-    return final_report
+    return final_report, all_analysis

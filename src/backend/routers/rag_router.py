@@ -7,8 +7,12 @@ from typing import Any
 from uuid import uuid4
 from collections import Counter
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile, Depends
+from sqlalchemy.orm import Session
 
+from src.backend.core.database import get_db
+from src.backend.models.comparison_models import Comparison, ComparisonFile, ChangeItem, Report, Document
+from src.backend.routers.files import _save_file_and_create_doc
 from src.backend.schemas.rag_schemas import (
     RagAskRequest,
     RagAskResponse,
@@ -34,6 +38,7 @@ logger = logging.getLogger(__name__)
 def _read_uploaded_text(upload: UploadFile) -> str:
     filename = (upload.filename or "").strip()
     suffix = os.path.splitext(filename)[1].lower()
+    upload.file.seek(0)
     raw = upload.file.read()
     if not raw:
         return ""
@@ -124,7 +129,7 @@ def _best_pairs(removed: list[str], added: list[str], *, max_pairs: int = 40) ->
     return pairs
 
 
-def _simple_compare_report(old_text: str, new_text: str, *, old_name: str, new_name: str) -> str:
+def _simple_compare_report(old_text: str, new_text: str, *, old_name: str, new_name: str) -> tuple[str, list[dict]]:
     old_sentences = _split_sentences(old_text)
     new_sentences = _split_sentences(new_text)
     old_counter = Counter(_normalize(s) for s in old_sentences if _normalize(s))
@@ -164,6 +169,8 @@ def _simple_compare_report(old_text: str, new_text: str, *, old_name: str, new_n
     pairs = _best_pairs(removed, added, max_pairs=40)
     if not pairs:
         pairs = [("—", "—", 0.0)]
+    
+    analysis_items = []
     for idx, (was_text, became_text, score) in enumerate(pairs, start=1):
         rec = (
             "Проверить вручную: найдено вероятное соответствие фрагментов."
@@ -173,12 +180,21 @@ def _simple_compare_report(old_text: str, new_text: str, *, old_name: str, new_n
         lines.append(
             f"| {idx} | {was_text} | {became_text} | ⚪ unknown | {rec} | Нет |"
         )
+        analysis_items.append({
+            "section_id": str(idx),
+            "was_text": was_text,
+            "became_text": became_text,
+            "risk_level": "unknown",
+            "comment": rec,
+            "portal_link": None
+        })
+
     lines += [
         "",
         f"_Совпадающих фрагментов: {kept_count}; удалено: {len(removed)}; добавлено: {len(added)}._",
     ]
 
-    return "\n".join(lines).strip()
+    return "\n".join(lines).strip(), analysis_items
 
 
 def _split_with_overlap(text: str, chunk_size: int, overlap: int) -> list[str]:
@@ -347,40 +363,108 @@ def rag_build_index(payload: RagIndexBuildRequest) -> dict:
 async def rag_compare_upload(
     old_file: UploadFile = File(...),
     new_file: UploadFile = File(...),
+    db: Session = Depends(get_db),
 ) -> RagCompareResponse:
+    # 1. Save files to DB as Documents
+    try:
+        old_doc = await _save_file_and_create_doc(old_file, db)
+        new_doc = await _save_file_and_create_doc(new_file, db)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save files: {exc}")
+
+    # 2. Extract text for analysis (since UploadFile cursor was moved during saving, we might need to read from storage or seek)
+    # Actually _save_file_and_create_doc seeks to 0 at the start but might end at the end.
+    # We should have used the text before saving or seek again.
+    # Re-reading after saving to ensure we have the full content.
+    from src.backend.core.storage import get_file_path
     old_text = _read_uploaded_text(old_file)
     new_text = _read_uploaded_text(new_file)
-    if not old_text:
-        raise HTTPException(status_code=400, detail="old_file is empty after parsing")
-    if not new_text:
-        raise HTTPException(status_code=400, detail="new_file is empty after parsing")
+
+    if not old_text or not new_text:
+        raise HTTPException(status_code=400, detail="One or both files are empty after processing")
+
+    # 3. Create Comparison record
+    comp = Comparison(
+        title=f"RAG: {old_doc.filename} vs {new_doc.filename}",
+        status="processing",
+        options={"rag": True}
+    )
+    db.add(comp)
+    db.commit()
+    db.refresh(comp)
+
+    # 4. Link files
+    db.add(ComparisonFile(comparison_id=comp.id, document_id=old_doc.id, role="old"))
+    db.add(ComparisonFile(comparison_id=comp.id, document_id=new_doc.id, role="new"))
+    db.commit()
+
+    report_markdown = ""
+    analysis_items = []
 
     try:
         from src.rag.agents.graph import analyze_documents
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Analyzer model unavailable: {exc}") from exc
-
-    try:
-        report = await analyze_documents(old_text, new_text)
+        report_markdown, analysis_results = await analyze_documents(old_text, new_text)
+        
+        # Convert AnalyzedSection objects to dicts for easier processing
+        for item in analysis_results:
+            for change in item.changes:
+                # If multiple risks per section, we create multiple ChangeItems or consolidate.
+                # Following simple logic: one ChangeItem per risk.
+                risks = item.risks if item.risks else [None]
+                for risk in risks:
+                    analysis_items.append({
+                        "section_id": item.section_id,
+                        "before": change.was_text,
+                        "after": change.became_text,
+                        "risk_level": risk.risk_level if risk else "unknown",
+                        "comment": risk.comment if risk else "No specific risk comment.",
+                        "linked_law": {
+                            "act": risk.violated_act if risk else None,
+                            "ref": risk.article_ref if risk else None,
+                            "link": risk.portal_link if risk else None
+                        }
+                    })
     except Exception as exc:
         logger.warning("RAG compare LLM analyzer failed, using local fallback: %s", exc)
-        fallback_report = _simple_compare_report(
+        report_markdown, analysis_items = _simple_compare_report(
             old_text,
             new_text,
             old_name=old_file.filename or "old_file",
             new_name=new_file.filename or "new_file",
         )
-        return RagCompareResponse(
-            old_file=old_file.filename or "old_file",
-            new_file=new_file.filename or "new_file",
-            report_markdown=fallback_report,
-        )
-    if not report:
-        report = "Отчет не сформирован."
+        # For fallback, mapping simplified items
+        # _simple_compare_report already returns a list of dicts with matching keys.
+        pass
+
+    if not report_markdown:
+        report_markdown = "Отчет не сформирован."
+
+    # 5. Save ChangeItems to DB
+    for item in analysis_items:
+        db.add(ChangeItem(
+            comparison_id=comp.id,
+            before=item.get("was_text") or item.get("before"),
+            after=item.get("became_text") or item.get("after"),
+            risk_level=item.get("risk_level"),
+            recommendation=item.get("comment"),
+            linked_law=item.get("linked_law"),
+            kind="rag_analysis"
+        ))
+
+    # 6. Finalize Comparison and Report
+    report_db = Report(comparison_id=comp.id, status="completed")
+    db.add(report_db)
+    db.commit()
+    db.refresh(report_db)
+
+    comp.status = "completed"
+    comp.report_id = report_db.id
+    db.add(comp)
+    db.commit()
 
     return RagCompareResponse(
         old_file=old_file.filename or "old_file",
         new_file=new_file.filename or "new_file",
-        report_markdown=report,
+        report_markdown=report_markdown,
     )
 
