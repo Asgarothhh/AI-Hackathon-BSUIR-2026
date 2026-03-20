@@ -119,6 +119,19 @@ def _score_source(source: WebSource, query: str, preferred_domains: Optional[Ite
     return score
 
 
+def _is_url_alive(url: str, timeout: float = 3.0) -> bool:
+    """Verifies that the URL returns a 2xx or 3xx status code."""
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            resp = client.head(url)
+            # Some sites return 405 for HEAD, try GET if so
+            if resp.status_code == 405:
+                resp = client.get(url)
+            return resp.is_success or resp.is_redirect
+    except Exception:
+        return False
+
+
 def search_sources(
     query: str,
     limit: int = 5,
@@ -145,7 +158,11 @@ def search_sources(
     unique: dict[str, WebSource] = {}
     for item in _iter_results(html):
         if item.url not in unique:
-            unique[item.url] = item
+            # Check if URL is alive to avoid 404s
+            if _is_url_alive(item.url):
+                unique[item.url] = item
+            else:
+                logger.debug("Skipping dead URL: %s", item.url)
 
     ranked = sorted(
         unique.values(),

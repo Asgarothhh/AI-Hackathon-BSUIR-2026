@@ -1,99 +1,103 @@
 import os
-from xhtml2pdf import pisa
-from io import BytesIO
+from fpdf import FPDF
 from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
 
-# Try to find a system font for Cyrillic support on MacOS
+# System font on Mac with good Cyrillic support
 FONT_PATH = "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
+
+class ComparisonPDF(FPDF):
+    def header(self):
+        if hasattr(self, 'title_text'):
+            self.set_font("ArialUnicode", "B", 14)
+            self.set_text_color(26, 95, 122)
+            self.cell(0, 10, "Отчет об анализе сравнения документов", ln=True, align="C")
+            self.set_draw_color(26, 95, 122)
+            self.line(10, 20, 200, 20)
+            self.ln(10)
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font("ArialUnicode", size=8)
+        self.set_text_color(128, 128, 128)
+        self.cell(0, 10, f"Страница {self.page_no()}/{{nb}}", align="C")
 
 def generate_comparison_pdf(comparison, change_items) -> bytes:
     """
-    Generates a PDF report for a document comparison using xhtml2pdf.
+    Generates a PDF report for a document comparison using fpdf2.
     """
-    # System font on Mac with good Cyrillic support
-    font_path = FONT_PATH
+    pdf = ComparisonPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
     
-    html = f"""
-    <html>
-    <head>
-    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
-    <style>
-        @font-face {{
-            font-family: 'ArialUnicode';
-            src: url('{font_path}');
-        }}
-        body {{ font-family: 'ArialUnicode'; font-size: 10pt; color: #333; }}
-        h1 {{ font-family: 'ArialUnicode'; color: #1a5f7a; text-align: center; border-bottom: 2px solid #1a5f7a; padding-bottom: 10px; }}
-        .header-info {{ font-family: 'ArialUnicode'; margin-bottom: 30px; background: #f8f9fa; padding: 15px; border-radius: 5px; }}
-        table {{ font-family: 'ArialUnicode'; width: 100%; border-collapse: collapse; margin-top: 20px; table-layout: fixed; }}
-        th, td {{ font-family: 'ArialUnicode'; border: 1px solid #dee2e6; padding: 12px; text-align: left; vertical-align: top; word-wrap: break-word; }}
-        th {{ background-color: #1a5f7a; color: white; font-weight: bold; width: 20%; }}
-        .col-id {{ width: 10%; }}
-        .col-text {{ width: 35%; }}
-        .col-risk {{ width: 10%; }}
-        .col-rec {{ width: 25%; }}
-        .risk-red {{ color: #dc3545; font-weight: bold; }}
-        .risk-yellow {{ color: #ffc107; font-weight: bold; }}
-        .risk-green {{ color: #28a745; font-weight: bold; }}
-        .risk-unknown {{ color: #6c757d; }}
-        .page-break {{  page-break-after: always; }}
-    </style>
-    </head>
-    <body>
-        <h1>Отчет об анализе сравнения документов</h1>
-        
-        <div class="header-info">
-            <p><strong>Сравнение ID:</strong> {comparison.id}</p>
-            <p><strong>Название:</strong> {comparison.title or 'Без названия'}</p>
-            <p><strong>Дата формирования:</strong> {datetime.now().strftime('%d.%m.%Y %H:%M')}</p>
-            <p><strong>Статус:</strong> {comparison.status}</p>
-        </div>
+    # Register font
+    if os.path.exists(FONT_PATH):
+        pdf.add_font("ArialUnicode", "", FONT_PATH)
+        pdf.set_font("ArialUnicode", size=10)
+    else:
+        logger.warning(f"Font not found at {FONT_PATH}, using fallback.")
+        pdf.set_font("helvetica", size=10)
 
-        <table>
-            <thead>
-                <tr>
-                    <th class="col-id">Пункт</th>
-                    <th class="col-text">Было</th>
-                    <th class="col-text">Стало</th>
-                    <th class="col-risk">Риск</th>
-                    <th class="col-rec">Рекомендация</th>
-                </tr>
-            </thead>
-            <tbody>
-    """
-    
-    if not change_items:
-        html += '<tr><td colspan="5" style="text-align: center;">Изменения не найдены.</td></tr>'
-    
-    for item in change_items:
-        risk_level = (item.risk_level or "unknown").strip().lower()
-        risk_class = f"risk-{risk_level}" if risk_level in ["red", "yellow", "green"] else "risk-unknown"
+    pdf.title_text = "Analysis Report"
+    pdf.add_page()
+
+    # Header Info Block
+    pdf.set_fill_color(248, 249, 250)
+    pdf.set_font("ArialUnicode", size=10)
+    pdf.cell(0, 8, f"ID Сравнения: {comparison.id}", ln=True, fill=True)
+    pdf.cell(0, 8, f"Название: {comparison.title or 'Без названия'}", ln=True, fill=True)
+    pdf.cell(0, 8, f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}", ln=True, fill=True)
+    pdf.ln(5)
+
+    # Define table
+    # Columns: ID, Before, After, Risk, Rec, Link (6 columns)
+    headers = ["ID", "Было", "Стало", "Риск", "Рекомендация", "Ссылка"]
+    # Adjust widths to fit A4 (total ~190mm)
+    col_widths = (10, 40, 40, 15, 65, 20)
+
+    # Use fpdf2 table API for better wrapping and orphans management
+    with pdf.table(
+        headings_style=None,
+        line_height=5,
+        col_widths=col_widths,
+        align="LEFT",
+        borders_layout="ALL"
+    ) as table:
+        # Manual header row with styling
+        pdf.set_font("ArialUnicode", "B", 9)
+        pdf.set_fill_color(26, 95, 122)
+        pdf.set_text_color(255, 255, 255)
+        row = table.row()
+        for header in headers:
+            row.cell(header)
         
-        html += f"""
-                <tr>
-                    <td class="col-id">{item.id}</td>
-                    <td class="col-text">{item.before or '—'}</td>
-                    <td class="col-text">{item.after or '—'}</td>
-                    <td class="col-risk {risk_class}">{risk_level.upper()}</td>
-                    <td class="col-rec">{item.recommendation or '—'}</td>
-                </tr>
-        """
-    
-    html += """
-            </tbody>
-        </table>
-    </body>
-    </html>
-    """
-    
-    result = BytesIO()
-    pisa_status = pisa.CreatePDF(html, dest=result, encoding='utf-8')
-    
-    if pisa_status.err:
-        logger.error(f"Error generating PDF: {pisa_status.err}")
-        return b""
+        pdf.set_font("ArialUnicode", size=8)
+        pdf.set_text_color(51, 51, 51)
         
-    return result.getvalue()
+        for item in change_items:
+            row = table.row()
+            row.cell(str(item.id))
+            row.cell(item.before or "—")
+            row.cell(item.after or "—")
+            
+            # Risk coloring logic
+            risk = (item.risk_level or "unknown").strip().lower()
+            risk_label = risk.upper()
+            row.cell(risk_label)
+            
+            row.cell(item.recommendation or "—")
+            
+            # Link column
+            link_val = "Нет"
+            if item.linked_law:
+                link_url = item.linked_law.get("link")
+                if link_url:
+                    link_val = "Link"
+            
+            row.cell(link_val)
+
+    # Optional: If we want to add clickable links, we could iterate again or use a custom cell in the table
+    # But for now, a simple text "Link" is safer for the table fit.
+
+    return pdf.output()
