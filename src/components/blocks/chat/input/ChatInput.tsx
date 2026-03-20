@@ -1,10 +1,13 @@
-import { useState, type ChangeEvent } from "react";
+import { useState, type ChangeEvent, type Dispatch, type SetStateAction } from "react";
 import ChatInputTools from "./ChatInputTools";
 import { uploadFiles } from "../../../../api/file";
 import { useAnswer } from "../../../../contexts/AnswerContext";
 
-export default function ChatInput() {
+interface ChatInputInterface {
+    setLoading: Dispatch<SetStateAction<boolean>>
+}
 
+export default function ChatInput({ setLoading }: ChatInputInterface) {
     const [file1, setFile1] = useState<File | null>(null);
     const [file2, setFile2] = useState<File | null>(null);
 
@@ -22,7 +25,9 @@ export default function ChatInput() {
 
     const handleClick = async () => {
         if (!file1 || !file2) return
+        setLoading(true)
         const result: any = await uploadFiles(file1, file2)
+        setLoading(false)
 
         setAnswerContent(result.report_markdown!)
     }

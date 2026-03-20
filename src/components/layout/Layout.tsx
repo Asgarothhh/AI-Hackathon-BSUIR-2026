@@ -6,9 +6,9 @@ import { useSidebar } from "../../contexts/SidebarContext";
 export default function Layout({ children }: PropsWithChildren) {
     const { isExpanded } = useSidebar()
     return (
-        <div className="w-full min-h-dvh grid font-family-sans transition"
+        <div className="w-full min-h-dvh grid font-family-sans transition-all"
             style={{
-                gridTemplateColumns: `${isExpanded ? "380px" : "112px"} 1fr`,
+                gridTemplateColumns: `${isExpanded ? "300px" : "112px"} 1fr`,
                 background: "radial-gradient(97% 260.66% at 86.04% 85.25%, #010101 0%, #3849B1 75.8%, #FCFDFF 100%, #EFF1FA 100%)",
             }}>
             <Aside />
