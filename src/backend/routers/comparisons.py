@@ -12,6 +12,8 @@ from src.backend.schemas.comparison import (
     ChangeItemOut,
     ComparisonListItem,
 )
+from src.backend.services.pdf_generator import generate_comparison_pdf
+from fastapi.responses import Response
 
 router = APIRouter(prefix="/api/v1/comparisons", tags=["comparisons"])
 
@@ -73,6 +75,35 @@ def get_track_all(
     total_pages = max(1, (total + per_page - 1) // per_page)
     items = base.order_by(ChangeItem.created_at.desc()).offset((page - 1) * per_page).limit(per_page).all()
     return PaginatedChangeItems(items=items, page=page, total_pages=total_pages)
+
+
+@router.get("/{comparison_id}/pdf")
+def export_comparison_pdf(comparison_id: int, db: Session = Depends(get_db)):
+    comp = db.query(Comparison).filter(Comparison.id == comparison_id).first()
+    if not comp:
+        raise HTTPException(status_code=404, detail="Comparison not found")
+    
+    change_items = db.query(ChangeItem).filter(ChangeItem.comparison_id == comparison_id).all()
+    
+    pdf_content = generate_comparison_pdf(comp, change_items)
+    if not pdf_content:
+        raise HTTPException(status_code=500, detail="Failed to generate PDF")
+        
+    filename = f"comparison_{comparison_id}.pdf"
+    return Response(
+        content=pdf_content,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+@router.get("/last/pdf")
+def export_last_comparison_pdf(db: Session = Depends(get_db)):
+    comp = db.query(Comparison).order_by(Comparison.created_at.desc()).first()
+    if not comp:
+        raise HTTPException(status_code=404, detail="No comparisons found")
+    
+    return export_comparison_pdf(comp.id, db)
 
 
 @router.get("/{comparison_id}", response_model=ComparisonOut)
