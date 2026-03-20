@@ -11,7 +11,8 @@ FONT_PATH = "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
 class ComparisonPDF(FPDF):
     def header(self):
         if hasattr(self, 'title_text'):
-            self.set_font("ArialUnicode", "B", 14)
+            # Using regular style because we only registered the regular face
+            self.set_font("ArialUnicode", "", 14)
             self.set_text_color(26, 95, 122)
             self.cell(0, 10, "Отчет об анализе сравнения документов", ln=True, align="C")
             self.set_draw_color(26, 95, 122)
@@ -65,7 +66,7 @@ def generate_comparison_pdf(comparison, change_items) -> bytes:
         borders_layout="ALL"
     ) as table:
         # Manual header row with styling
-        pdf.set_font("ArialUnicode", "B", 9)
+        pdf.set_font("ArialUnicode", "", 9)
         pdf.set_fill_color(26, 95, 122)
         pdf.set_text_color(255, 255, 255)
         row = table.row()
