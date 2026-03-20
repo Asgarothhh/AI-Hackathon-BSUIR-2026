@@ -29,7 +29,9 @@ export default function Aside() {
                 </AsideTool>
             </div>
             <div>
-                <AsideTool onClick={() => { }} toolIcon="/icon/sidebar/settings.svg" />
+                <AsideTool onClick={() => { }} toolIcon="/icon/sidebar/settings.svg">
+                    Настройки
+                </AsideTool>
             </div>
         </aside>
     )
