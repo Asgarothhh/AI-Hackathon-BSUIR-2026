@@ -1,4 +1,3 @@
-# backend/ws/manager.py
 from typing import Dict, List
 from fastapi import WebSocket
 import asyncio

@@ -1,4 +1,3 @@
-# backend/core/security.py
 import os
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
@@ -18,7 +17,6 @@ def _to_timestamp(dt: datetime) -> int:
 def create_access_token(subject: int, extra: Optional[Dict[str, Any]] = None) -> str:
     now = _now_utc()
     exp = now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    # sub must be a string for PyJWT
     payload = {"sub": str(subject), "exp": _to_timestamp(exp), "type": "access"}
     if extra:
         payload.update(extra)
@@ -34,7 +32,6 @@ def create_refresh_token(subject: int, extra: Optional[Dict[str, Any]] = None) -
     return {"token": token, "expires_at": exp}
 
 def decode_token(token: str) -> Dict[str, Any]:
-    # decode returns payload with 'sub' as string (because we encoded it as string)
     return jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
 
 def is_access_token(payload: Dict[str, Any]) -> bool:

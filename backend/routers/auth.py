@@ -1,14 +1,10 @@
-# backend/routers/auth.py
 import logging
-from datetime import timezone
-from typing import Optional, Callable, Dict, Any
-
+from typing import Callable
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
-
 from backend.core.database import get_db
 from backend.models.user import User
 from backend.models.rbac import Role as RoleModel, Permission, RefreshToken, user_roles, role_permissions
@@ -22,7 +18,7 @@ from backend.core.security import (
 )
 from passlib.context import CryptContext
 
-import jwt  # PyJWT
+import jwt
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -52,10 +48,6 @@ def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer),
     db: Session = Depends(get_db),
 ) -> User:
-    """
-    Dependency: validate access token and return User instance.
-    Accepts only access tokens (type == "access").
-    """
     token = credentials.credentials
     try:
         payload = decode_token(token)
@@ -85,10 +77,6 @@ def get_current_user(
 
 # --- permission check helper ---
 def user_has_permission(db: Session, user: User, permission_name: str) -> bool:
-    """
-    Check whether the user has a given permission via roles.
-    """
-    # fetch role ids for user from association table
     role_rows = db.execute(user_roles.select().where(user_roles.c.user_id == user.id)).fetchall()
     role_ids = [r.role_id for r in role_rows]
     if not role_ids:
@@ -105,11 +93,6 @@ def user_has_permission(db: Session, user: User, permission_name: str) -> bool:
 
 
 def require_permission(permission_name: str) -> Callable:
-    """
-    Returns a dependency function that raises 403 if current user lacks permission.
-    Usage in route: _admin: bool = Depends(require_permission("manage:roles"))
-    """
-
     def _dep(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
         if not user_has_permission(db, user, permission_name):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
@@ -130,7 +113,6 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
         db.add(new_user)
         db.commit()
         db.refresh(new_user)
-        # assign default role 'user' if exists
         role_user = db.query(RoleModel).filter_by(name="user").first()
         if role_user:
             db.execute(user_roles.insert().values(user_id=new_user.id, role_id=role_user.id))

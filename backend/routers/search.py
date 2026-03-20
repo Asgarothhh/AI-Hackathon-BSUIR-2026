@@ -1,4 +1,3 @@
-# backend/routers/search.py
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from typing import List
@@ -7,6 +6,7 @@ from backend.models.comparison_models import Document, ComparisonFile, Compariso
 from backend.schemas.comparison import DocumentOut, ChangeItemOut
 
 router = APIRouter(prefix="/api/v1", tags=["search"])
+
 
 @router.get("/documents/search", response_model=List[DocumentOut])
 def search_documents(q: str = Query(..., min_length=1), limit: int = Query(50, ge=1, le=500), db: Session = Depends(get_db)):
@@ -23,6 +23,7 @@ def search_documents(q: str = Query(..., min_length=1), limit: int = Query(50, g
         (ChangeItem.after.ilike(like))
     ).limit(limit)
     return docs_q.all()
+
 
 @router.get("/change_items/search", response_model=List[ChangeItemOut])
 def search_change_items(q: str = Query(..., min_length=1), limit: int = Query(100, ge=1, le=1000), db: Session = Depends(get_db)):

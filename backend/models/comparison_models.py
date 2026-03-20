@@ -1,4 +1,3 @@
-# backend/models/comparison_models.py
 from sqlalchemy import Column, Integer, Text, TIMESTAMP, func, JSON, ForeignKey, BigInteger
 from sqlalchemy.orm import relationship
 from backend.models.base import Base

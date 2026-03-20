@@ -15,14 +15,13 @@ from backend.schemas.comparison import (
 
 router = APIRouter(prefix="/api/v1/comparisons", tags=["comparisons"])
 
+
 @router.get("", response_model=List[ComparisonListItem])
 def list_comparisons(limit: int = Query(50, ge=1, le=500), db: Session = Depends(get_db)):
-    """
-    Список всех comparisons, новые сверху.
-    """
     q = db.query(Comparison).order_by(Comparison.created_at.desc()).limit(limit)
     items = q.all()
     return items
+
 
 @router.post("", response_model=ComparisonOut, status_code=202)
 def create_comparison(payload: ComparisonCreateIn, db: Session = Depends(get_db)):
@@ -45,6 +44,7 @@ def create_comparison(payload: ComparisonCreateIn, db: Session = Depends(get_db)
     db.commit()
     return ComparisonOut(id=comp.id, title=comp.title, status=comp.status, summary=None, risk_counts=None, report_id=comp.report_id)
 
+
 @router.get("/{comparison_id}", response_model=ComparisonOut)
 def get_comparison(comparison_id: int, db: Session = Depends(get_db)):
     comp = db.query(Comparison).filter(Comparison.id == comparison_id).first()
@@ -56,6 +56,7 @@ def get_comparison(comparison_id: int, db: Session = Depends(get_db)):
     green = db.query(ChangeItem).filter(ChangeItem.comparison_id == comp.id, ChangeItem.risk_level == "green").count()
     summary = f"Найдено {total} изменений: {red} критических, {yellow} требующих проверки, {green} безопасных"
     return ComparisonOut(id=comp.id, title=comp.title, status=comp.status, summary=summary, risk_counts={"green": green, "yellow": yellow, "red": red}, report_id=comp.report_id)
+
 
 @router.get("/track", response_model=PaginatedChangeItems)
 def get_track_all(

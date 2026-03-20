@@ -1,6 +1,4 @@
-# backend/schemas/comparison.py
 from datetime import datetime
-
 from pydantic import BaseModel, Field
 from typing import List, Optional, Any
 
@@ -47,10 +45,6 @@ class PaginatedChangeItems(BaseModel):
     page: int
     total_pages: int
 
-
-# backend/schemas/comparison.py  (дополнения)
-from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
 
 class DocumentOut(BaseModel):
     id: int

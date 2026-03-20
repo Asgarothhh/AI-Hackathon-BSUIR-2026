@@ -1,4 +1,3 @@
-# backend/models/user.py
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, func, Index
 from sqlalchemy.orm import relationship
 from backend.models.base import Base
@@ -14,7 +13,7 @@ class User(Base):
     is_superuser = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    # Отношение к ролям через таблицу user_roles (строчное имя, чтобы избежать импорта)
+    # Отношение к ролям через таблицу user_roles
     roles = relationship("Role", secondary="user_roles", back_populates="users")
 
     __table_args__ = (

@@ -1,4 +1,3 @@
-# backend/routers/reports.py
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from backend.core.database import get_db
@@ -10,12 +9,9 @@ from typing import Optional
 
 router = APIRouter(prefix="/api/v1/reports", tags=["reports"])
 
+
 @router.post("/comparisons/{comparison_id}/export", status_code=status.HTTP_202_ACCEPTED)
 def export_report(comparison_id: int, db: Session = Depends(get_db), authorization: Optional[str] = None):
-    """
-    Запустить экспорт отчёта. Доступно без проверки ролей.
-    В реальной системе: поставить задачу в очередь для генерации .docx.
-    """
     comp = db.query(Comparison).filter(Comparison.id == comparison_id).first()
     if not comp:
         raise HTTPException(status_code=404, detail="Comparison not found")
@@ -33,6 +29,7 @@ def export_report(comparison_id: int, db: Session = Depends(get_db), authorizati
         db.add(report)
         db.commit()
     return {"report_id": report.id, "status": report.status}
+
 
 @router.get("/{report_id}/download")
 def download_report(report_id: int, db: Session = Depends(get_db)):

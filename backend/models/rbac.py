@@ -1,4 +1,3 @@
-# backend/models/rbac.py
 from sqlalchemy import Column, Integer, String, Text, Boolean, ForeignKey, DateTime, Table
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
