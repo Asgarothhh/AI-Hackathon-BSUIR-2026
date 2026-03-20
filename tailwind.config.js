@@ -1,5 +1,6 @@
 // tailwind.config.js
 export default {
+  content: ["./src/**/*.{js,jsx,ts,tsx}"],
   theme: {
     extend: {
       backgroundImage: {
@@ -11,8 +12,8 @@ export default {
       },
     },
     fontFamily: {
-      'sans': ['Manrope', 'sans-serif'],
+      sans: ["Manrope", "sans-serif"],
     },
   },
-  plugins: [],
+  plugins: [require("@tailwindcss/typography")],
 };
