@@ -441,6 +441,15 @@ async def rag_compare_upload(
 
     # 5. Save ChangeItems to DB
     for item in analysis_items:
+        # User request: skip if no "author" (linked_law items are "Отсутствует")
+        ll = item.get("linked_law")
+        if ll:
+            act = str(ll.get("act") or "").strip().lower()
+            ref = str(ll.get("ref") or "").strip().lower()
+            # If both act and ref are missing or placeholders, skip saving
+            if (not act or "отсутствует" in act) and (not ref or "отсутствует" in ref):
+                continue
+
         db.add(ChangeItem(
             comparison_id=comp.id,
             before=item.get("was_text") or item.get("before"),
