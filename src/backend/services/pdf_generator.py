@@ -5,14 +5,27 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# System font on Mac with good Cyrillic support
-FONT_PATH = "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
+# Try to find a local font or fallback
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Path relative to src/backend/services/pdf_generator.py
+LOCAL_FONT_PATH = os.path.normpath(os.path.join(BASE_DIR, "..", "assets", "fonts", "NotoSans-Regular.ttf"))
+MAC_FONT_PATH = "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"
+WIN_FONT_PATH = "C:\\Windows\\Fonts\\arial.ttf"
+
+def _get_best_font() -> str | None:
+    if os.path.exists(LOCAL_FONT_PATH):
+        return LOCAL_FONT_PATH
+    if os.path.exists(MAC_FONT_PATH):
+        return MAC_FONT_PATH
+    if os.path.exists(WIN_FONT_PATH):
+        return WIN_FONT_PATH
+    return None
 
 class ComparisonPDF(FPDF):
     def header(self):
         if hasattr(self, 'title_text'):
-            # Using regular style because we only registered the regular face
-            self.set_font("ArialUnicode", "", 14)
+            # Using regular style
+            self.set_font("CustomFont", "", 14)
             self.set_text_color(26, 95, 122)
             self.cell(0, 10, "Отчет об анализе сравнения документов", ln=True, align="C")
             self.set_draw_color(26, 95, 122)
@@ -33,11 +46,12 @@ def generate_comparison_pdf(comparison, change_items) -> bytes:
     pdf.set_auto_page_break(auto=True, margin=15)
     
     # Register font
-    if os.path.exists(FONT_PATH):
-        pdf.add_font("ArialUnicode", "", FONT_PATH)
-        pdf.set_font("ArialUnicode", size=10)
+    font_path = _get_best_font()
+    if font_path:
+        pdf.add_font("CustomFont", "", font_path)
+        pdf.set_font("CustomFont", size=10)
     else:
-        logger.warning(f"Font not found at {FONT_PATH}, using fallback.")
+        logger.warning(f"No Cyrillic font found (looked at {LOCAL_FONT_PATH}), using fallback.")
         pdf.set_font("helvetica", size=10)
 
     pdf.title_text = "Analysis Report"
@@ -45,7 +59,7 @@ def generate_comparison_pdf(comparison, change_items) -> bytes:
 
     # Header Info Block
     pdf.set_fill_color(248, 249, 250)
-    pdf.set_font("ArialUnicode", size=10)
+    pdf.set_font("CustomFont", size=10)
     pdf.cell(0, 8, f"ID Сравнения: {comparison.id}", ln=True, fill=True)
     pdf.cell(0, 8, f"Название: {comparison.title or 'Без названия'}", ln=True, fill=True)
     pdf.cell(0, 8, f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}", ln=True, fill=True)
@@ -66,14 +80,14 @@ def generate_comparison_pdf(comparison, change_items) -> bytes:
         borders_layout="ALL"
     ) as table:
         # Manual header row with styling
-        pdf.set_font("ArialUnicode", "", 9)
+        pdf.set_font("CustomFont", "", 9)
         pdf.set_fill_color(26, 95, 122)
         pdf.set_text_color(255, 255, 255)
         row = table.row()
         for header in headers:
             row.cell(header)
         
-        pdf.set_font("ArialUnicode", size=8)
+        pdf.set_font("CustomFont", size=8)
         pdf.set_text_color(51, 51, 51)
         
         for item in change_items:
